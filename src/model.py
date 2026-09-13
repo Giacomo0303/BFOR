@@ -28,35 +28,59 @@ class ResNet50Backbone(nn.Module):
 
 
 class FeaturePyramidNetwork(nn.Module):
-    def __init__(self):
+    def __init__(self, n_channels):
         super().__init__()
 
         self.lrg_conv1x1 = nn.Conv2d(
-            in_channels=2048, out_channels=128, kernel_size=1, stride=1, padding="same"
+            in_channels=2048,
+            out_channels=n_channels,
+            kernel_size=1,
+            stride=1,
+            padding="same",
         )
 
         self.lrg_upsample = nn.Upsample(scale_factor=2)
 
         self.med_conv1x1 = nn.Conv2d(
-            in_channels=1024, out_channels=128, kernel_size=1, stride=1, padding="same"
+            in_channels=1024,
+            out_channels=n_channels,
+            kernel_size=1,
+            stride=1,
+            padding="same",
         )
 
         self.med_upsample = nn.Upsample(scale_factor=2)
 
         self.sml_conv1x1 = nn.Conv2d(
-            in_channels=512, out_channels=128, kernel_size=1, stride=1, padding="same"
+            in_channels=512,
+            out_channels=n_channels,
+            kernel_size=1,
+            stride=1,
+            padding="same",
         )
 
         self.lrg_conv3x3 = nn.Conv2d(
-            in_channels=128, out_channels=128, kernel_size=3, stride=1, padding="same"
+            in_channels=n_channels,
+            out_channels=n_channels,
+            kernel_size=3,
+            stride=1,
+            padding="same",
         )
 
         self.med_conv3x3 = nn.Conv2d(
-            in_channels=128, out_channels=128, kernel_size=3, stride=1, padding="same"
+            in_channels=n_channels,
+            out_channels=n_channels,
+            kernel_size=3,
+            stride=1,
+            padding="same",
         )
 
         self.sml_conv3x3 = nn.Conv2d(
-            in_channels=128, out_channels=128, kernel_size=3, stride=1, padding="same"
+            in_channels=n_channels,
+            out_channels=n_channels,
+            kernel_size=3,
+            stride=1,
+            padding="same",
         )
 
     def forward(self, sml, med, lrg):
@@ -72,18 +96,26 @@ class FeaturePyramidNetwork(nn.Module):
 
 
 class Encoder(nn.Module):
-    def __init__(self, backbone, fpn):
+    def __init__(self, backbone, fpn, n_channels):
         super().__init__()
         self.backbone = backbone
         self.fpn = fpn
 
         self.lrg_conv = nn.Conv2d(
-            in_channels=128, out_channels=128, kernel_size=3, stride=1, padding="same"
+            in_channels=n_channels,
+            out_channels=n_channels,
+            kernel_size=3,
+            stride=1,
+            padding="same",
         )
         self.lrg_upsample = nn.Upsample(scale_factor=4)
 
         self.med_conv = nn.Conv2d(
-            in_channels=128, out_channels=128, kernel_size=3, stride=1, padding="same"
+            in_channels=n_channels,
+            out_channels=n_channels,
+            kernel_size=3,
+            stride=1,
+            padding="same",
         )
         self.med_upsample = nn.Upsample(scale_factor=2)
 
@@ -97,26 +129,42 @@ class Encoder(nn.Module):
 
 
 class ObjHead(nn.Module):
-    def __init__(self):
+    def __init__(self, n_channels, drop_rate):
         super().__init__()
 
         self.conv_transpose = nn.ConvTranspose2d(
-            in_channels=128, out_channels=128, kernel_size=2, stride=2, padding=0
+            in_channels=n_channels,
+            out_channels=n_channels,
+            kernel_size=2,
+            stride=2,
+            padding=0,
         )
 
         self.conv3x3_1 = nn.Conv2d(
-            in_channels=128, out_channels=128, kernel_size=3, stride=1, padding="same"
+            in_channels=n_channels,
+            out_channels=n_channels,
+            kernel_size=3,
+            stride=1,
+            padding="same",
         )
 
         self.conv3x3_2 = nn.Conv2d(
-            in_channels=128, out_channels=128, kernel_size=3, stride=1, padding="same"
+            in_channels=n_channels,
+            out_channels=n_channels,
+            kernel_size=3,
+            stride=1,
+            padding="same",
         )
 
         self.conv1x1 = nn.Conv2d(
-            in_channels=128, out_channels=1, kernel_size=1, stride=1, padding="same"
+            in_channels=n_channels,
+            out_channels=1,
+            kernel_size=1,
+            stride=1,
+            padding="same",
         )
 
-        self.dropout = nn.Dropout(p=0.2)
+        self.dropout = nn.Dropout(p=drop_rate)
 
     def forward(self, x):
         x = F.relu(self.conv_transpose(x))
@@ -129,25 +177,41 @@ class ObjHead(nn.Module):
 
 
 class ScaleHead(nn.Module):
-    def __init__(self):
+    def __init__(self, n_channels, drop_rate):
         super().__init__()
 
         self.conv3x3_1 = nn.Conv2d(
-            in_channels=128, out_channels=128, kernel_size=3, stride=1, padding="same"
+            in_channels=n_channels,
+            out_channels=n_channels,
+            kernel_size=3,
+            stride=1,
+            padding="same",
         )
 
         self.conv3x3_2 = nn.Conv2d(
-            in_channels=128, out_channels=128, kernel_size=3, stride=1, padding="same"
+            in_channels=n_channels,
+            out_channels=n_channels,
+            kernel_size=3,
+            stride=1,
+            padding="same",
         )
 
-        self.dropout = nn.Dropout(p=0.2)
+        self.dropout = nn.Dropout(p=drop_rate)
 
         self.conv3x3_3 = nn.Conv2d(
-            in_channels=128, out_channels=128, kernel_size=3, stride=1, padding="same"
+            in_channels=n_channels,
+            out_channels=n_channels,
+            kernel_size=3,
+            stride=1,
+            padding="same",
         )
 
         self.conv1x1 = nn.Conv2d(
-            in_channels=128, out_channels=1, kernel_size=1, stride=1, padding="same"
+            in_channels=n_channels,
+            out_channels=1,
+            kernel_size=1,
+            stride=1,
+            padding="same",
         )
 
     def forward(self, x):
@@ -161,52 +225,88 @@ class ScaleHead(nn.Module):
 
 
 class Decoder(nn.Module):
-    def __init__(self):
+    def __init__(self, n_channels, drop_rate):
         super().__init__()
 
         self.conv3x3_1 = nn.Conv2d(
-            in_channels=128, out_channels=128, kernel_size=3, stride=1, padding="same"
+            in_channels=n_channels,
+            out_channels=n_channels,
+            kernel_size=3,
+            stride=1,
+            padding="same",
         )
 
         self.conv_transpose_1 = nn.ConvTranspose2d(
-            in_channels=128, out_channels=128, kernel_size=2, stride=2, padding=0
+            in_channels=n_channels,
+            out_channels=n_channels,
+            kernel_size=2,
+            stride=2,
+            padding=0,
         )
 
-        self.norm = nn.GroupNorm(num_groups=32, num_channels=128)
+        self.norm = nn.GroupNorm(num_groups=32, num_channels=n_channels)
 
         self.conv3x3_2 = nn.Conv2d(
-            in_channels=128, out_channels=128, kernel_size=3, stride=1, padding="same"
+            in_channels=n_channels,
+            out_channels=n_channels,
+            kernel_size=3,
+            stride=1,
+            padding="same",
         )
 
-        self.dropout = nn.Dropout(p=0.2)
+        self.dropout = nn.Dropout(p=drop_rate)
 
         self.conv3x3_3 = nn.Conv2d(
-            in_channels=128, out_channels=128, kernel_size=3, stride=1, padding="same"
+            in_channels=n_channels,
+            out_channels=n_channels,
+            kernel_size=3,
+            stride=1,
+            padding="same",
         )
 
         self.conv_transpose_2 = nn.ConvTranspose2d(
-            in_channels=128, out_channels=128, kernel_size=2, stride=2, padding=0
+            in_channels=n_channels,
+            out_channels=n_channels,
+            kernel_size=2,
+            stride=2,
+            padding=0,
         )
 
         self.conv_transpose_skip = nn.ConvTranspose2d(
-            in_channels=128, out_channels=128, kernel_size=2, stride=2, padding=0
+            in_channels=n_channels,
+            out_channels=n_channels,
+            kernel_size=2,
+            stride=2,
+            padding=0,
         )
 
         self.conv3x3_4 = nn.Conv2d(
-            in_channels=128, out_channels=128, kernel_size=3, stride=1, padding="same"
+            in_channels=n_channels,
+            out_channels=n_channels,
+            kernel_size=3,
+            stride=1,
+            padding="same",
         )
 
         self.conv_transpose_3 = nn.ConvTranspose2d(
-            in_channels=128, out_channels=128, kernel_size=2, stride=2, padding=0
+            in_channels=n_channels,
+            out_channels=n_channels,
+            kernel_size=2,
+            stride=2,
+            padding=0,
         )
 
         self.conv3x3_5 = nn.Conv2d(
-            in_channels=128, out_channels=128, kernel_size=3, stride=1, padding="same"
+            in_channels=n_channels,
+            out_channels=n_channels,
+            kernel_size=3,
+            stride=1,
+            padding="same",
         )
 
-        self.obj_head = ObjHead()
-        self.width_head = ScaleHead()
-        self.height_head = ScaleHead()
+        self.obj_head = ObjHead(n_channels, drop_rate)
+        self.width_head = ScaleHead(n_channels, drop_rate)
+        self.height_head = ScaleHead(n_channels, drop_rate)
 
     def forward(self, x):
         x = F.relu(self.conv3x3_1(x))
@@ -232,16 +332,16 @@ class Decoder(nn.Module):
 
 
 class BFOR_model(nn.Module):
-    def __init__(self):
+    def __init__(self, n_channels, drop_rate):
         super().__init__()
 
         self.backbone = ResNet50Backbone()
-        self.fpn = FeaturePyramidNetwork()
-        self.encoder = Encoder(self.backbone, self.fpn)
+        self.fpn = FeaturePyramidNetwork(n_channels=n_channels)
+        self.encoder = Encoder(self.backbone, self.fpn, n_channels)
 
-        self.sml_decoder = Decoder()
-        self.med_decoder = Decoder()
-        self.lrg_decoder = Decoder()
+        self.sml_decoder = Decoder(n_channels, drop_rate)
+        self.med_decoder = Decoder(n_channels, drop_rate)
+        self.lrg_decoder = Decoder(n_channels, drop_rate)
 
     def forward(self, x):
         sml_fm, med_fm, lrg_fm = self.encoder(x)
