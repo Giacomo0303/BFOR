@@ -1,5 +1,5 @@
-import torch
-from torch import nn
+import torch.nn.functional as F
+from torch import nn, sigmoid
 from torchvision.models import resnet50
 
 
@@ -95,5 +95,163 @@ class Encoder(nn.Module):
 
         return sml_fm, med_fm, lrg_fm
 
-        
 
+class ObjHead(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+        self.conv_transpose = nn.ConvTranspose2d(
+            in_channels=128, out_channels=128, kernel_size=2, stride=2, padding=0
+        )
+
+        self.conv3x3_1 = nn.Conv2d(
+            in_channels=128, out_channels=128, kernel_size=3, stride=1, padding="same"
+        )
+
+        self.conv3x3_2 = nn.Conv2d(
+            in_channels=128, out_channels=128, kernel_size=3, stride=1, padding="same"
+        )
+
+        self.conv1x1 = nn.Conv2d(
+            in_channels=128, out_channels=1, kernel_size=1, stride=1, padding="same"
+        )
+
+        self.dropout = nn.Dropout(p=0.2)
+
+    def forward(self, x):
+        x = F.relu(self.conv_transpose(x))
+        x = F.relu(self.conv3x3_1(x))
+        x = F.relu(self.conv3x3_2(x))
+        x = self.dropout(x)
+        x = self.conv1x1(x)
+
+        return sigmoid(x)
+
+
+class ScaleHead(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+        self.conv3x3_1 = nn.Conv2d(
+            in_channels=128, out_channels=128, kernel_size=3, stride=1, padding="same"
+        )
+
+        self.conv3x3_2 = nn.Conv2d(
+            in_channels=128, out_channels=128, kernel_size=3, stride=1, padding="same"
+        )
+
+        self.dropout = nn.Dropout(p=0.2)
+
+        self.conv3x3_3 = nn.Conv2d(
+            in_channels=128, out_channels=128, kernel_size=3, stride=1, padding="same"
+        )
+
+        self.conv1x1 = nn.Conv2d(
+            in_channels=128, out_channels=1, kernel_size=1, stride=1, padding="same"
+        )
+
+    def forward(self, x):
+        x = F.relu(self.conv3x3_1(x))
+        x = F.relu(self.conv3x3_2(x))
+        x = self.dropout(x)
+        x = F.relu(self.conv3x3_3(x))
+        x = self.conv1x1(x)
+
+        return sigmoid(x)
+
+
+class Decoder(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+        self.conv3x3_1 = nn.Conv2d(
+            in_channels=128, out_channels=128, kernel_size=3, stride=1, padding="same"
+        )
+
+        self.conv_transpose_1 = nn.ConvTranspose2d(
+            in_channels=128, out_channels=128, kernel_size=2, stride=2, padding=0
+        )
+
+        self.norm = nn.GroupNorm(num_groups=32, num_channels=128)
+
+        self.conv3x3_2 = nn.Conv2d(
+            in_channels=128, out_channels=128, kernel_size=3, stride=1, padding="same"
+        )
+
+        self.dropout = nn.Dropout(p=0.2)
+
+        self.conv3x3_3 = nn.Conv2d(
+            in_channels=128, out_channels=128, kernel_size=3, stride=1, padding="same"
+        )
+
+        self.conv_transpose_2 = nn.ConvTranspose2d(
+            in_channels=128, out_channels=128, kernel_size=2, stride=2, padding=0
+        )
+
+        self.conv_transpose_skip = nn.ConvTranspose2d(
+            in_channels=128, out_channels=128, kernel_size=2, stride=2, padding=0
+        )
+
+        self.conv3x3_4 = nn.Conv2d(
+            in_channels=128, out_channels=128, kernel_size=3, stride=1, padding="same"
+        )
+
+        self.conv_transpose_3 = nn.ConvTranspose2d(
+            in_channels=128, out_channels=128, kernel_size=2, stride=2, padding=0
+        )
+
+        self.conv3x3_5 = nn.Conv2d(
+            in_channels=128, out_channels=128, kernel_size=3, stride=1, padding="same"
+        )
+
+        self.obj_head = ObjHead()
+        self.width_head = ScaleHead()
+        self.height_head = ScaleHead()
+
+    def forward(self, x):
+        x = F.relu(self.conv3x3_1(x))
+        x = F.relu(self.conv_transpose_1(x))
+        x_skip = F.relu(self.conv_transpose_skip(x))
+        x = self.norm(x)
+        x = F.relu(self.conv3x3_2(x))
+        x = self.dropout(x)
+        x = F.relu(self.conv3x3_3(x))
+        x = F.relu(self.conv_transpose_2(x)) + x_skip
+        x = self.dropout(x)
+        x = F.relu(self.conv3x3_4(x))
+
+        obj_out = self.obj_head(x)
+
+        x = F.relu(self.conv_transpose_3(x))
+        x = F.relu(self.conv3x3_5(x))
+
+        width_out = self.width_head(x)
+        height_out = self.height_head(x)
+
+        return obj_out, width_out, height_out
+
+
+class BFOR_model(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+        self.backbone = ResNet50Backbone()
+        self.fpn = FeaturePyramidNetwork()
+        self.encoder = Encoder(self.backbone, self.fpn)
+
+        self.sml_decoder = Decoder()
+        self.med_decoder = Decoder()
+        self.lrg_decoder = Decoder()
+
+    def forward(self, x):
+        sml_fm, med_fm, lrg_fm = self.encoder(x)
+
+        obj_sml, w_sml, h_sml = self.sml_decoder(sml_fm)
+        obj_med, w_med, h_med = self.med_decoder(med_fm)
+        obj_lrg, w_lrg, h_lrg = self.lrg_decoder(lrg_fm)
+
+        return {
+            "sml": {"obj": obj_sml, "w": w_sml, "h": h_sml},
+            "med": {"obj": obj_med, "w": w_med, "h": h_med},
+            "lrg": {"obj": obj_lrg, "w": w_lrg, "h": h_lrg},
+        }

@@ -1,13 +1,8 @@
 import torch
 
-from src.model import FeaturePyramidNetwork, ResNet50Backbone, Encoder
+from src.model import BFOR_model
 
-model = ResNet50Backbone()
-input = torch.randn(size=(1, 3, 448, 448))
+input = torch.randn(size=(1, 3, 448, 448)).to("cuda")
+model = BFOR_model().to("cuda")
 
-fpn = FeaturePyramidNetwork()
-
-enc = Encoder(model, fpn)
-
-for out in enc(input):
-    print(out.shape)
+print(model(input))
