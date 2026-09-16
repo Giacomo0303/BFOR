@@ -1,8 +1,5 @@
-import torch
+from src.datasets import PascalVOC
 
-from src.model import BFOR_model
+train_set = PascalVOC(path="./Data")
 
-input = torch.randn(size=(2, 3, 448, 448)).to("cuda")
-model = BFOR_model(128, 0.2).to("cuda")
-
-print(model(input)["sml"]["w"].shape)
+print(train_set[0])
