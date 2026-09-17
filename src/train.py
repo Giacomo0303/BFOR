@@ -23,11 +23,16 @@ def train_epoch(model, dataloader, loss_fn, optimizer, scaler, device, epoch=Non
 
         batch_loss = loss_fn(out, y)
 
-        scaler.scale(batch_loss).backward()
-        scaler.step(optimizer)
-        scaler.update()
+        if isinstance(batch_loss, torch.Tensor) and batch_loss.requires_grad:
+            scaler.scale(batch_loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
 
-        loss_val = batch_loss.item()
+        loss_val = (
+            batch_loss.item()
+            if isinstance(batch_loss, torch.Tensor)
+            else float(batch_loss)
+        )
         running_loss += loss_val
         current_avg = running_loss / (batch_idx + 1)
 
@@ -60,7 +65,11 @@ def validate(model, dataloader, loss_fn, device, epoch=None):
 
             batch_loss = loss_fn(out, y)
 
-            loss_val = batch_loss.item()
+            loss_val = (
+                batch_loss.item()
+                if isinstance(batch_loss, torch.Tensor)
+                else float(batch_loss)
+            )
             running_loss += loss_val
             current_avg = running_loss / (batch_idx + 1)
 

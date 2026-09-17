@@ -18,19 +18,29 @@ class BFOR_Loss(nn.Module):
         device_type = "cuda" if "cuda" in str(self.device) else "cpu"
         with torch.amp.autocast(device_type=device_type, enabled=False):
             total_loss = 0.0
+            valid_images = 0
 
             for b, target_boxes in enumerate(targets):
-                total_loss += self.compute_image_loss(
-                    img_num=b, preds=preds, tgt_boxes=target_boxes
-                )
+                if target_boxes.shape[0] > 0:
+                    img_loss = self.compute_image_loss(
+                        img_num=b, preds=preds, tgt_boxes=target_boxes
+                    )
+                    if valid_images == 0:
+                        total_loss = img_loss
+                    else:
+                        total_loss = total_loss + img_loss
+                    valid_images += 1
 
-            return total_loss / len(targets)
+            if valid_images == 0:
+                return torch.tensor(0.0, device=self.device)
+
+            return total_loss / valid_images
 
     def compute_image_loss(self, img_num, preds, tgt_boxes):
         num_boxes = tgt_boxes.shape[0]
 
         if num_boxes == 0:
-            return 0.0
+            return torch.tensor(0.0, device=self.device)
 
         img_loss = 0.0
 
@@ -46,9 +56,12 @@ class BFOR_Loss(nn.Module):
             obj_loss, pred_ctr = self.obj_loss(pred, tgt_box)
             scale_loss = self.scale_loss(pred, tgt_box, pred_ctr)
 
-            img_loss += obj_loss + scale_loss
+            if i == 0:
+                img_loss = obj_loss + scale_loss
+            else:
+                img_loss = img_loss + obj_loss + scale_loss
 
-        img_loss /= num_boxes
+        img_loss = img_loss / num_boxes
 
         return img_loss
 
@@ -66,11 +79,13 @@ class BFOR_Loss(nn.Module):
     def obj_loss(self, pred, tgt_box):
         # find the limits of the tgt box
         cx, cy, w, h = tgt_box
+        w = max(float(w), 1.0)
+        h = max(float(h), 1.0)
 
-        x1 = max(0, int(cx - w / 2))
-        x2 = min(448, int(cx + w / 2))
-        y1 = max(0, int(cy - h / 2))
-        y2 = min(448, int(cy + h / 2))
+        x1 = max(0, min(447, int(cx - w / 2)))
+        x2 = max(x1 + 1, min(448, int(cx + w / 2)))
+        y1 = max(0, min(447, int(cy - h / 2)))
+        y2 = max(y1 + 1, min(448, int(cy + h / 2)))
 
         # meshgrid
         x_range = torch.arange(x1, x2, device=self.device)
@@ -85,6 +100,7 @@ class BFOR_Loss(nn.Module):
         )
 
         cropped_pred = pred["obj"][0, y1:y2, x1:x2]
+        cropped_pred = torch.clamp(cropped_pred, min=1e-6, max=1.0 - 1e-6)
 
         ros_loss = nn.functional.binary_cross_entropy(
             cropped_pred, y_n, reduction="mean"
@@ -92,22 +108,21 @@ class BFOR_Loss(nn.Module):
 
         # computing the ctr_loss
         # soft-argmax
-        weights = cropped_pred / torch.sum(cropped_pred)
+        weights = cropped_pred / (torch.sum(cropped_pred) + 1e-8)
 
-        pred_ctr = torch.sum(grid_x * weights), torch.sum(grid_y * weights)
+        pred_ctr = (torch.sum(grid_x * weights), torch.sum(grid_y * weights))
 
         ctr_loss = (pred_ctr[0] - cx) ** 2 + (pred_ctr[1] - cy) ** 2
-        ctr_loss /= w * h
+        ctr_loss = ctr_loss / (w * h)
 
         return ros_loss + self.lambda_ctr * ctr_loss, pred_ctr
 
     def scale_loss(self, pred, tgt_box, pred_ctr):
         cx, cy, w, h = tgt_box
-        cx, cy = round(float(cx)), round(float(cy))
-        cx_p, cy_p = (
-            round(float(pred_ctr[0].detach())),
-            round(float(pred_ctr[1].detach())),
-        )
+        cx_val = max(0, min(447, round(float(cx))))
+        cy_val = max(0, min(447, round(float(cy))))
+        cx_p = max(0, min(447, round(float(pred_ctr[0].detach()))))
+        cy_p = max(0, min(447, round(float(pred_ctr[1].detach()))))
         half_k = self.k // 2
 
         y1_pred = max(0, cy_p - half_k)
@@ -129,10 +144,10 @@ class BFOR_Loss(nn.Module):
             torch.abs(cropped_w_pred - w_q) + torch.abs(cropped_h_pred - h_q)
         )
 
-        y1_tgt = max(0, cy - half_k)
-        y2_tgt = min(448, cy + half_k + 1)
-        x1_tgt = max(0, cx - half_k)
-        x2_tgt = min(448, cx + half_k + 1)
+        y1_tgt = max(0, cy_val - half_k)
+        y2_tgt = min(448, cy_val + half_k + 1)
+        x1_tgt = max(0, cx_val - half_k)
+        x2_tgt = min(448, cx_val + half_k + 1)
 
         cropped_w_tgt = pred["w"][0, y1_tgt:y2_tgt, x1_tgt:x2_tgt]
         cropped_h_tgt = pred["h"][0, y1_tgt:y2_tgt, x1_tgt:x2_tgt]
@@ -148,4 +163,6 @@ class BFOR_Loss(nn.Module):
             torch.abs(cropped_w_tgt - w_q) + torch.abs(cropped_h_tgt - h_q)
         )
 
-        return (pred_loss + tgt_loss) / (self.k**2)
+        pred_count = max(cropped_w_pred.numel(), 1)
+        tgt_count = max(cropped_w_tgt.numel(), 1)
+        return (pred_loss / pred_count) + (tgt_loss / tgt_count)
