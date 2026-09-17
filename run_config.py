@@ -1,0 +1,23 @@
+# Data
+DATA_PATH = "Data"
+TRAIN_SIZE = 0.9
+BATCH_SIZE = 16
+NUM_WORKERS = 4
+SEED = 42
+
+# Model & Loss
+N_CHANNELS = 128
+DROP_RATE = 0.2
+ALPHA = 0.1
+LAMBDA_CTR = 1.0
+K = 9
+
+# Training
+EPOCHS = 100
+LR = 1e-4
+LR_PATIENCE = 3
+LR_FACTOR = 0.3
+MIN_LR_SCHEDULER = 1e-9
+EARLY_STOPPING_PATIENCE = 10
+DEVICE = "cuda"
+SAVE_PATH = "best_model.pt"
