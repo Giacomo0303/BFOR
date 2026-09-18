@@ -77,6 +77,7 @@ class PascalVOC(Dataset):
         img, target = self.dataset[idx]
 
         bboxes = target["annotation"]["object"]
+        labels = []
 
         # if there is only one box
         if not isinstance(bboxes, list):
@@ -86,7 +87,7 @@ class PascalVOC(Dataset):
         for box in bboxes:
             if box["name"] in self.target_classes:
                 # ignore difficult objects during training
-                if self.split == "train" and box.get("difficult", "0") == "1":
+                if box.get("difficult", "0") == "1":
                     continue
 
                 b = box["bndbox"]
@@ -98,6 +99,7 @@ class PascalVOC(Dataset):
                         float(b["ymax"]),
                     ]
                 )
+                labels.append(box["name"])
 
         # max 10 boxes per image during training
         if self.split == "train" and len(final_bboxes) > 10:
@@ -137,6 +139,9 @@ class PascalVOC(Dataset):
             boxes_tensor = torch.zeros((0, 4), dtype=torch.float32)
         else:
             boxes_tensor = torch.tensor(norm_boxes, dtype=torch.float32)
+
+        if self.split == "test":
+            return tensor_img, boxes_tensor, labels
 
         return tensor_img, boxes_tensor
 
