@@ -4,7 +4,7 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader
 
 import run_config as cfg
-from src.datasets import PascalVOC
+from src.datasets import PascalVOC, StratifiedBatchSampler
 from src.loss import BFOR_Loss
 from src.model import BFOR_model
 from src.train import EarlyStopping, run_training
@@ -19,10 +19,17 @@ def main():
         path=cfg.DATA_PATH, split="val", train_size=cfg.TRAIN_SIZE, seed=cfg.SEED
     )
 
-    train_loader = DataLoader(
+    train_sampler = StratifiedBatchSampler(
         dataset=train_set,
         batch_size=cfg.BATCH_SIZE,
-        shuffle=True,
+        sml_cutoff=cfg.SCALE_CUTOFF_SML,
+        lrg_cutoff=cfg.SCALE_CUTOFF_LRG,
+        seed=cfg.SEED,
+    )
+
+    train_loader = DataLoader(
+        dataset=train_set,
+        batch_sampler=train_sampler,
         collate_fn=PascalVOC.collate_fn,
         num_workers=cfg.NUM_WORKERS,
         pin_memory=True,
@@ -42,7 +49,13 @@ def main():
         cfg.DEVICE
     )
     loss = BFOR_Loss(
-        alpha=cfg.ALPHA, lambda_ctr=cfg.LAMBDA_CTR, k=cfg.K, device=cfg.DEVICE
+        alpha=cfg.ALPHA,
+        lambda_ctr=cfg.LAMBDA_CTR,
+        k=cfg.K,
+        device=cfg.DEVICE,
+        lambda_bg=cfg.LAMBDA_BG_SCALE,
+        sml_cutoff=cfg.SCALE_CUTOFF_SML,
+        lrg_cutoff=cfg.SCALE_CUTOFF_LRG,
     )
 
     optimizer = Adam(params=model.parameters(), lr=cfg.LR)
@@ -70,6 +83,7 @@ def main():
         early_stopping=early_stopping,
         epochs=cfg.EPOCHS,
         device=cfg.DEVICE,
+        max_grad_norm=cfg.MAX_GRAD_NORM,
     )
 
 

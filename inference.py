@@ -41,7 +41,8 @@ def execute_inference(
     found_idx = None
     for _ in range(50):
         candidate_idx = randint(0, len(test_set) - 1)
-        _, target = test_set[candidate_idx]
+        item = test_set[candidate_idx]
+        target = item[1]
         if len(target) > 0:
             found_idx = candidate_idx
             break
@@ -50,7 +51,9 @@ def execute_inference(
         found_idx = randint(0, len(test_set) - 1)
 
     print(f"Testing on image index: {found_idx}")
-    img, target = test_set[found_idx]
+    sample = test_set[found_idx]
+    img, target = sample[0], sample[1]
+    meta = sample[3] if len(sample) > 3 else None
     img_batch = img.unsqueeze(0).to(device)
 
     # Forward pass
@@ -67,6 +70,7 @@ def execute_inference(
         h_min=6.0,
         iou_thresh=0.5,
         max_detections=1000,
+        meta=meta,
     )
 
     print(f"Detections after NMS: {len(pred_boxes)} boxes")

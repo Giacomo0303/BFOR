@@ -1,5 +1,5 @@
 from src.model import BFOR_model
-from src.inference_utils import decode_predictions
+from src.inference_utils import decode_predictions, boxes_padded_to_orig_xyxy
 import run_config as cfg
 import torch
 from src.datasets import PascalVOC
@@ -18,25 +18,37 @@ def compute_AR(model, test_set, device, minIoU=0.5, max_detections=1000):
     model.eval()
 
     with torch.no_grad():
-        for x, y, labels in tqdm(test_set):
-            if len(y) == 0:
+        for item in tqdm(test_set):
+            x, y, labels = item[0], item[1], item[2]
+            meta = item[3] if len(item) > 3 else None
+
+            if len(labels) == 0:
                 continue
 
             x = x.unsqueeze(0).to(device)
 
-            y = box_convert(y.to(device) * 448.0, in_fmt="cxcywh", out_fmt="xyxy")
-
             with torch.amp.autocast(device_type=device, dtype=torch.float16):
                 out = model(x)
 
+            # 1. Decode predictions on 448 canvas with letterbox padding filter
             pred_boxes, _pred_scores = decode_predictions(
-                out, iou_thresh=0.5, max_detections=max_detections
+                out, iou_thresh=0.5, max_detections=max_detections, meta=meta
             )
 
-            if len(pred_boxes) == 0:
-                max_iou_per_gt = torch.zeros(len(y), device=device)
+            # 2. Map predictions and GT back to original image space
+            if meta is not None and "orig_boxes" in meta:
+                gt_boxes = meta["orig_boxes"].to(device)
+                pred_boxes_eval = boxes_padded_to_orig_xyxy(pred_boxes, meta)
             else:
-                ious = box_iou(pred_boxes, y)
+                gt_boxes = box_convert(
+                    y.to(device) * 448.0, in_fmt="cxcywh", out_fmt="xyxy"
+                )
+                pred_boxes_eval = pred_boxes
+
+            if len(pred_boxes_eval) == 0 or len(gt_boxes) == 0:
+                max_iou_per_gt = torch.zeros(len(labels), device=device)
+            else:
+                ious = box_iou(pred_boxes_eval, gt_boxes)
                 max_iou_per_gt, _ = torch.max(ious, dim=0)
 
             for idx in range(len(labels)):
@@ -50,11 +62,17 @@ def compute_AR(model, test_set, device, minIoU=0.5, max_detections=1000):
     for cls in stats:
         total_hits += stats[cls]["hits"]
         total_gt += stats[cls]["total"]
-        recall = (stats[cls]["hits"] / stats[cls]["total"]) * 100
-        print(f"{cls}: {recall:.1f}%")
+        if stats[cls]["total"] > 0:
+            recall = (stats[cls]["hits"] / stats[cls]["total"]) * 100
+            print(f"{cls}: {recall:.1f}%")
+        else:
+            print(f"{cls}: N/A (0 ground truth)")
 
-    recall = (total_hits / total_gt) * 100
-    print(f"Average: {recall:.1f}%")
+    if total_gt > 0:
+      recall = (total_hits / total_gt) * 100
+      print(f"Average: {recall:.1f}%")
+    else:
+      print("Average: N/A")
 
 
 def main(checkpoint_path="best_model.pt"):

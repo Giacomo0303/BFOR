@@ -4,7 +4,16 @@ import torch
 from tqdm import tqdm
 
 
-def train_epoch(model, dataloader, loss_fn, optimizer, scaler, device, epoch=None):
+def train_epoch(
+    model,
+    dataloader,
+    loss_fn,
+    optimizer,
+    scaler,
+    device,
+    epoch=None,
+    max_grad_norm=15.0,
+):
     model.train()
     running_loss = 0.0
 
@@ -25,6 +34,11 @@ def train_epoch(model, dataloader, loss_fn, optimizer, scaler, device, epoch=Non
 
         if isinstance(batch_loss, torch.Tensor) and batch_loss.requires_grad:
             scaler.scale(batch_loss).backward()
+            if max_grad_norm is not None:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(
+                    model.parameters(), max_norm=max_grad_norm
+                )
             scaler.step(optimizer)
             scaler.update()
 
@@ -91,6 +105,7 @@ def run_training(
     early_stopping,
     epochs,
     device,
+    max_grad_norm=15.0,
     start_epoch=0,
 ):
     print(f"\n{'=' * 65}")
@@ -110,6 +125,7 @@ def run_training(
             scaler=scaler,
             device=device,
             epoch=epoch + 1,
+            max_grad_norm=max_grad_norm,
         )
 
         # 2. Validation with progress bar
