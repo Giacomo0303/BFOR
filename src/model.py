@@ -1,323 +1,357 @@
-import torch
-import torch.nn as nn
 import torch.nn.functional as F
-from torchvision.models import ResNet50_Weights, resnet50
+from torch import nn, sigmoid
+from torchvision.models import resnet50
 
 
 class ResNet50Backbone(nn.Module):
-    """
-    ResNet-50 feature extractor outputting multi-scale features:
-    C3: stride 8 (56x56, 512 channels)
-    C4: stride 16 (28x28, 1024 channels)
-    C5: stride 32 (14x14, 2048 channels)
-    """
-
-    def __init__(self, weights=None):
+    def __init__(self):
         super().__init__()
-        base_model = resnet50(weights=weights)
+        base_model = resnet50(weights=None)
 
-        self.conv1 = base_model.conv1
-        self.bn1 = base_model.bn1
-        self.relu = base_model.relu
-        self.maxpool = base_model.maxpool
+        self.layer0 = nn.Sequential(
+            base_model.conv1, base_model.bn1, base_model.relu, base_model.maxpool
+        )
 
         self.layer1 = base_model.layer1
-        self.layer2 = base_model.layer2  # C3: 56x56, 512 channels
-        self.layer3 = base_model.layer3  # C4: 28x28, 1024 channels
-        self.layer4 = base_model.layer4  # C5: 14x14, 2048 channels
+        self.layer2 = base_model.layer2
+        self.layer3 = base_model.layer3
+        self.layer4 = base_model.layer4
 
     def forward(self, x):
-        x = self.conv1(x)
-        x = self.bn1(x)
-        x = self.relu(x)
-        x = self.maxpool(x)
-
+        x = self.layer0(x)
         x = self.layer1(x)
-        c3 = self.layer2(x)
-        c4 = self.layer3(c3)
-        c5 = self.layer4(c4)
+        sml_fm = self.layer2(x)
+        med_fm = self.layer3(sml_fm)
+        lrg_fm = self.layer4(med_fm)
 
-        return c3, c4, c5
+        return sml_fm, med_fm, lrg_fm
 
 
-class FPN(nn.Module):
-    """
-    Feature Pyramid Network matching B-FOR authors' FPN:
-    - Lateral 1x1 convolutions for C3, C4, C5
-    - Bilinear 2x upsampling and top-down additive fusion
-    - P3_conv, P4_conv, P5_conv (3x3 convs)
-    - Scale homogenization bringing P3, P4, P5 all to 56x56:
-        * p3 = P3 (56x56)
-        * p4 = Conv2D -> ConvTranspose2D (stride 2) -> Conv2D (28x28 -> 56x56)
-        * p5 = Conv2D -> ConvTranspose2D (stride 2) -> Conv2D -> ConvTranspose2D (stride 2) -> Conv2D (14x14 -> 56x56)
-    """
-
-    def __init__(self, out_channels=128):
+class FeaturePyramidNetwork(nn.Module):
+    def __init__(self, n_channels):
         super().__init__()
-        self.out_channels = out_channels
 
-        self.lat_C3 = nn.Conv2d(512, out_channels, 1, padding="same")
-        self.lat_C4 = nn.Conv2d(1024, out_channels, 1, padding="same")
-        self.lat_C5 = nn.Conv2d(2048, out_channels, 1, padding="same")
-
-        self.up2 = nn.UpsamplingBilinear2d(scale_factor=2)
-        self.up3 = nn.UpsamplingBilinear2d(scale_factor=2)
-
-        self.P3_conv = nn.Conv2d(out_channels, out_channels, 3, padding="same")
-        self.P4_conv = nn.Conv2d(out_channels, out_channels, 3, padding="same")
-        self.P5_conv = nn.Conv2d(out_channels, out_channels, 3, padding="same")
-
-        self.p4_conv1 = nn.Conv2d(out_channels, out_channels, 3, padding="same")
-        self.upsample1 = nn.ConvTranspose2d(
-            out_channels, out_channels, 3, stride=2, padding=1, output_padding=1
+        self.lrg_conv1x1 = nn.Conv2d(
+            in_channels=2048,
+            out_channels=n_channels,
+            kernel_size=1,
+            stride=1,
+            padding="same",
         )
-        self.p4_conv2 = nn.Conv2d(out_channels, out_channels, 3, padding="same")
 
-        self.p5_conv1 = nn.Conv2d(out_channels, out_channels, 3, padding="same")
-        self.upsample2 = nn.ConvTranspose2d(
-            out_channels, out_channels, 3, stride=2, padding=1, output_padding=1
+        self.lrg_upsample = nn.Upsample(scale_factor=2)
+
+        self.med_conv1x1 = nn.Conv2d(
+            in_channels=1024,
+            out_channels=n_channels,
+            kernel_size=1,
+            stride=1,
+            padding="same",
         )
-        self.p5_conv2 = nn.Conv2d(out_channels, out_channels, 3, padding="same")
-        self.upsample3 = nn.ConvTranspose2d(
-            out_channels, out_channels, 3, stride=2, padding=1, output_padding=1
+
+        self.med_upsample = nn.Upsample(scale_factor=2)
+
+        self.sml_conv1x1 = nn.Conv2d(
+            in_channels=512,
+            out_channels=n_channels,
+            kernel_size=1,
+            stride=1,
+            padding="same",
         )
-        self.p5_conv3 = nn.Conv2d(out_channels, out_channels, 3, padding="same")
 
-    def forward(self, inputs):
-        C3, C4, C5 = inputs
+        self.lrg_conv3x3 = nn.Conv2d(
+            in_channels=n_channels,
+            out_channels=n_channels,
+            kernel_size=3,
+            stride=1,
+            padding="same",
+        )
 
-        L5 = self.lat_C5(C5)
-        L4 = self.lat_C4(C4)
-        L3 = self.lat_C3(C3)
+        self.med_conv3x3 = nn.Conv2d(
+            in_channels=n_channels,
+            out_channels=n_channels,
+            kernel_size=3,
+            stride=1,
+            padding="same",
+        )
 
-        P5_td = L5
-        P4_td = L4 + self.up2(P5_td)
-        P3_td = L3 + self.up3(P4_td)
+        self.sml_conv3x3 = nn.Conv2d(
+            in_channels=n_channels,
+            out_channels=n_channels,
+            kernel_size=3,
+            stride=1,
+            padding="same",
+        )
 
-        P5 = self.P5_conv(P5_td)
-        P4 = self.P4_conv(P4_td)
-        P3 = self.P3_conv(P3_td)
+    def forward(self, sml, med, lrg):
+        lrg = self.lrg_conv1x1(lrg)
+        med = self.lrg_upsample(lrg) + self.med_conv1x1(med)
+        sml = self.med_upsample(med) + self.sml_conv1x1(sml)
 
-        p3 = P3
+        lrg_fm = self.lrg_conv3x3(lrg)
+        med_fm = self.med_conv3x3(med)
+        sml_fm = self.sml_conv3x3(sml)
 
-        p4 = F.relu(self.p4_conv1(P4))
-        p4 = F.relu(self.upsample1(p4))
-        p4 = F.relu(self.p4_conv2(p4))
-
-        p5 = F.relu(self.p5_conv1(P5))
-        p5 = F.relu(self.upsample2(p5))
-        p5 = F.relu(self.p5_conv2(p5))
-        p5 = F.relu(self.upsample3(p5))
-        p5 = F.relu(self.p5_conv3(p5))
-
-        return p3, p4, p5
+        return sml_fm, med_fm, lrg_fm
 
 
-class HeadBlock(nn.Module):
-    """
-    Head / Decoder block exactly matching B-FOR authors' HeadBlock:
-    - Input: 56x56 feature map (128 channels)
-    - Shared Trunk with GroupNorm(32, 128) and residual skip connection:
-        * conv1 (128->128, 3x3) -> up1 (ConvTranspose2d 3x3, stride 2, 56->112)
-        * skip: skip_up (ConvTranspose2d 128->92, stride 2, 112->224)
-        * norm1 (GroupNorm 32, 128) -> conv3 (128->92, 3x3) -> conv4 (92->92, 3x3) -> up3 (ConvTranspose2d 3x3, stride 2, 112->224)
-        * add: x + skip (both 92 channels, 224x224)
-        * conv5 (92->92, 3x3)
-        * Scale branch: up4 (ConvTranspose2d 3x3, stride 2, 224->448) -> conv6 (92->92, 3x3)
-        * Gaussian branch: up4_g (ConvTranspose2d 3x3, stride 2, 224->448) -> conv6_g (92->92, 3x3)
-    - Gaussian (Objectness) Head:
-        * g1 (92->92, 3x3) -> g2 (92->64, 3x3) -> g_out (64->1, 1x1, Sigmoid)
-    - Height Head:
-        * h8 -> h9 -> h10 -> h11 (all 92->92, 3x3) -> h_out (92->1, 1x1, ReLU)
-    - Width Head:
-        * w12 -> w13 -> w14 -> w15 (all 92->92, 3x3) -> w_out (92->1, 1x1, ReLU)
-    """
-
-    def __init__(self, drop_rate=0.0):
+class Encoder(nn.Module):
+    def __init__(self, backbone, fpn, n_channels):
         super().__init__()
-        # Shared trunk
-        self.conv1 = nn.Conv2d(128, 128, 3, padding="same")
-        self.up1 = nn.ConvTranspose2d(
-            128, 128, 3, stride=2, padding=1, output_padding=1
+        self.backbone = backbone
+        self.fpn = fpn
+
+        self.lrg_conv = nn.Conv2d(
+            in_channels=n_channels,
+            out_channels=n_channels,
+            kernel_size=3,
+            stride=1,
+            padding="same",
         )
+        self.lrg_upsample = nn.Upsample(scale_factor=4)
 
-        self.skip_up = nn.ConvTranspose2d(
-            128, 92, 3, stride=2, padding=1, output_padding=1
+        self.med_conv = nn.Conv2d(
+            in_channels=n_channels,
+            out_channels=n_channels,
+            kernel_size=3,
+            stride=1,
+            padding="same",
         )
-
-        self.norm1 = nn.GroupNorm(32, 128)
-        self.conv3 = nn.Conv2d(128, 92, 3, padding="same")
-        self.drop1 = nn.Dropout(p=drop_rate)
-
-        self.conv4 = nn.Conv2d(92, 92, 3, padding="same")
-        self.up3 = nn.ConvTranspose2d(
-            92, 92, 3, stride=2, padding=1, output_padding=1
-        )
-
-        self.drop2 = nn.Dropout(p=drop_rate)
-
-        self.conv5 = nn.Conv2d(92, 92, 3, padding="same")
-        self.up4 = nn.ConvTranspose2d(
-            92, 92, 3, stride=2, padding=1, output_padding=1
-        )
-        self.up4_g = nn.ConvTranspose2d(
-            92, 92, 3, stride=2, padding=1, output_padding=1
-        )
-        self.conv6 = nn.Conv2d(92, 92, 3, padding="same")
-        self.conv6_g = nn.Conv2d(92, 92, 3, padding="same")
-
-        # Gaussian head (objectness)
-        self.g1 = nn.Conv2d(92, 92, 3, padding="same")
-        self.gd = nn.Dropout(p=drop_rate)
-        self.g2 = nn.Conv2d(92, 64, 3, padding="same")
-        self.g_out = nn.Conv2d(64, 1, 1, padding="same")
-
-        # Cov height
-        self.h8 = nn.Conv2d(92, 92, 3, padding="same")
-        self.h9 = nn.Conv2d(92, 92, 3, padding="same")
-        self.hd = nn.Dropout(p=drop_rate)
-        self.h10 = nn.Conv2d(92, 92, 3, padding="same")
-        self.h11 = nn.Conv2d(92, 92, 3, padding="same")
-        self.h_out = nn.Conv2d(92, 1, 1, padding="same")
-
-        # Cov width
-        self.w12 = nn.Conv2d(92, 92, 3, padding="same")
-        self.w13 = nn.Conv2d(92, 92, 3, padding="same")
-        self.wd = nn.Dropout(p=drop_rate)
-        self.w14 = nn.Conv2d(92, 92, 3, padding="same")
-        self.w15 = nn.Conv2d(92, 92, 3, padding="same")
-        self.w_out = nn.Conv2d(92, 1, 1, padding="same")
+        self.med_upsample = nn.Upsample(scale_factor=2)
 
     def forward(self, x):
-        x = F.relu(self.conv1(x))
-        x = F.relu(self.up1(x))
+        sml, med, lrg = self.backbone(x)
+        sml_fm, med, lrg = self.fpn(sml, med, lrg)
+        med_fm = self.med_upsample(self.med_conv(med))
+        lrg_fm = self.lrg_upsample(self.lrg_conv(lrg))
 
-        skip = x
-        x = self.norm1(x)
-        x = F.relu(self.conv3(x))
-        skip = F.relu(self.skip_up(skip))
+        return sml_fm, med_fm, lrg_fm
 
-        x = self.drop1(x)
-        x = F.relu(self.conv4(x))
-        x = F.relu(self.up3(x))
 
-        x = x + skip
-        x = self.drop2(x)
+class ObjHead(nn.Module):
+    def __init__(self, n_channels, drop_rate):
+        super().__init__()
 
-        x = F.relu(self.conv5(x))
-        feat_cov = F.relu(self.up4(x))
-        shared = F.relu(self.conv6(feat_cov))
-        feat_g = F.relu(self.up4_g(x))
-        feat_g = F.relu(self.conv6_g(feat_g))
+        self.conv_transpose = nn.ConvTranspose2d(
+            in_channels=n_channels,
+            out_channels=n_channels,
+            kernel_size=2,
+            stride=2,
+            padding=0,
+        )
 
-        # Gaussian / Objectness
-        g = F.relu(self.g1(feat_g))
-        g = self.gd(g)
-        g = F.relu(self.g2(g))
-        g = torch.sigmoid(self.g_out(g))
+        self.conv3x3_1 = nn.Conv2d(
+            in_channels=n_channels,
+            out_channels=n_channels,
+            kernel_size=3,
+            stride=1,
+            padding="same",
+        )
 
-        # Cov height
-        h = F.relu(self.h8(shared))
-        h = F.relu(self.h9(h))
-        h = self.hd(h)
-        h = F.relu(self.h10(h))
-        h = F.relu(self.h11(h))
-        ch = F.relu(self.h_out(h))
+        self.conv3x3_2 = nn.Conv2d(
+            in_channels=n_channels,
+            out_channels=n_channels,
+            kernel_size=3,
+            stride=1,
+            padding="same",
+        )
 
-        # Cov width
-        w = F.relu(self.w12(shared))
-        w = F.relu(self.w13(w))
-        w = self.wd(w)
-        w = F.relu(self.w14(w))
-        w = F.relu(self.w15(w))
-        cw = F.relu(self.w_out(w))
+        self.conv1x1 = nn.Conv2d(
+            in_channels=n_channels,
+            out_channels=1,
+            kernel_size=1,
+            stride=1,
+            padding="same",
+        )
 
-        return g, ch, cw
+        self.dropout = nn.Dropout(p=drop_rate)
+
+    def forward(self, x):
+        x = F.relu(self.conv_transpose(x))
+        x = F.relu(self.conv3x3_1(x))
+        x = F.relu(self.conv3x3_2(x))
+        x = self.dropout(x)
+        x = self.conv1x1(x)
+
+        return sigmoid(x)
+
+
+class ScaleHead(nn.Module):
+    def __init__(self, n_channels, drop_rate):
+        super().__init__()
+
+        self.conv3x3_1 = nn.Conv2d(
+            in_channels=n_channels,
+            out_channels=n_channels,
+            kernel_size=3,
+            stride=1,
+            padding="same",
+        )
+
+        self.conv3x3_2 = nn.Conv2d(
+            in_channels=n_channels,
+            out_channels=n_channels,
+            kernel_size=3,
+            stride=1,
+            padding="same",
+        )
+
+        self.dropout = nn.Dropout(p=drop_rate)
+
+        self.conv3x3_3 = nn.Conv2d(
+            in_channels=n_channels,
+            out_channels=n_channels,
+            kernel_size=3,
+            stride=1,
+            padding="same",
+        )
+
+        self.conv1x1 = nn.Conv2d(
+            in_channels=n_channels,
+            out_channels=1,
+            kernel_size=1,
+            stride=1,
+            padding="same",
+        )
+
+    def forward(self, x):
+        x = F.relu(self.conv3x3_1(x))
+        x = F.relu(self.conv3x3_2(x))
+        x = self.dropout(x)
+        x = F.relu(self.conv3x3_3(x))
+        x = self.conv1x1(x)
+
+        return sigmoid(x)
+
+
+class Decoder(nn.Module):
+    def __init__(self, n_channels, drop_rate):
+        super().__init__()
+
+        self.conv3x3_1 = nn.Conv2d(
+            in_channels=n_channels,
+            out_channels=n_channels,
+            kernel_size=3,
+            stride=1,
+            padding="same",
+        )
+
+        self.conv_transpose_1 = nn.ConvTranspose2d(
+            in_channels=n_channels,
+            out_channels=n_channels,
+            kernel_size=2,
+            stride=2,
+            padding=0,
+        )
+
+        self.norm = nn.GroupNorm(num_groups=32, num_channels=n_channels)
+
+        self.conv3x3_2 = nn.Conv2d(
+            in_channels=n_channels,
+            out_channels=n_channels,
+            kernel_size=3,
+            stride=1,
+            padding="same",
+        )
+
+        self.dropout = nn.Dropout(p=drop_rate)
+
+        self.conv3x3_3 = nn.Conv2d(
+            in_channels=n_channels,
+            out_channels=n_channels,
+            kernel_size=3,
+            stride=1,
+            padding="same",
+        )
+
+        self.conv_transpose_2 = nn.ConvTranspose2d(
+            in_channels=n_channels,
+            out_channels=n_channels,
+            kernel_size=2,
+            stride=2,
+            padding=0,
+        )
+
+        self.conv_transpose_skip = nn.ConvTranspose2d(
+            in_channels=n_channels,
+            out_channels=n_channels,
+            kernel_size=2,
+            stride=2,
+            padding=0,
+        )
+
+        self.conv3x3_4 = nn.Conv2d(
+            in_channels=n_channels,
+            out_channels=n_channels,
+            kernel_size=3,
+            stride=1,
+            padding="same",
+        )
+
+        self.conv_transpose_3 = nn.ConvTranspose2d(
+            in_channels=n_channels,
+            out_channels=n_channels,
+            kernel_size=2,
+            stride=2,
+            padding=0,
+        )
+
+        self.conv3x3_5 = nn.Conv2d(
+            in_channels=n_channels,
+            out_channels=n_channels,
+            kernel_size=3,
+            stride=1,
+            padding="same",
+        )
+
+        self.obj_head = ObjHead(n_channels, drop_rate)
+        self.width_head = ScaleHead(n_channels, drop_rate)
+        self.height_head = ScaleHead(n_channels, drop_rate)
+
+    def forward(self, x):
+        x = F.relu(self.conv3x3_1(x))
+        x = F.relu(self.conv_transpose_1(x))
+        x_skip = F.relu(self.conv_transpose_skip(x))
+        x = self.norm(x)
+        x = F.relu(self.conv3x3_2(x))
+        x = self.dropout(x)
+        x = F.relu(self.conv3x3_3(x))
+        x = F.relu(self.conv_transpose_2(x)) + x_skip
+        x = self.dropout(x)
+        x = F.relu(self.conv3x3_4(x))
+
+        obj_out = self.obj_head(x)
+
+        x = F.relu(self.conv_transpose_3(x))
+        x = F.relu(self.conv3x3_5(x))
+
+        width_out = self.width_head(x)
+        height_out = self.height_head(x)
+
+        return obj_out, width_out, height_out
 
 
 class BFOR_model(nn.Module):
-    """
-    B-FOR detection model matching authors' CustomFPNModel:
-    - FeatureExtractor: ResNet-50 backbone (C3, C4, C5)
-    - FPN: Multi-scale Feature Pyramid Network with learned upsamplers to 56x56
-    - head_P3, head_P4, head_P5: HeadBlock decoders for small, medium, and large scales
-    """
-
-    def __init__(self, n_channels=128, drop_rate=0.0, backbone_weights=None):
+    def __init__(self, n_channels, drop_rate):
         super().__init__()
-        self.feature_extractor = ResNet50Backbone(weights=backbone_weights)
-        self.fpn = FPN(out_channels=n_channels)
-        self.head_P3 = HeadBlock(drop_rate=drop_rate)
-        self.head_P4 = HeadBlock(drop_rate=drop_rate)
-        self.head_P5 = HeadBlock(drop_rate=drop_rate)
 
-        # Aliases for backward compatibility
-        self.backbone = self.feature_extractor
-        self.sml_decoder = self.head_P3
-        self.med_decoder = self.head_P4
-        self.lrg_decoder = self.head_P5
+        self.backbone = ResNet50Backbone()
+        self.fpn = FeaturePyramidNetwork(n_channels=n_channels)
+        self.encoder = Encoder(self.backbone, self.fpn, n_channels)
+
+        self.sml_decoder = Decoder(n_channels, drop_rate)
+        self.med_decoder = Decoder(n_channels, drop_rate)
+        self.lrg_decoder = Decoder(n_channels, drop_rate)
 
     def forward(self, x):
-        c3, c4, c5 = self.feature_extractor(x)
-        p3, p4, p5 = self.fpn((c3, c4, c5))
+        sml_fm, med_fm, lrg_fm = self.encoder(x)
 
-        g3, ch3, cw3 = self.head_P3(p3)
-        g4, ch4, cw4 = self.head_P4(p4)
-        g5, ch5, cw5 = self.head_P5(p5)
+        obj_sml, w_sml, h_sml = self.sml_decoder(sml_fm)
+        obj_med, w_med, h_med = self.med_decoder(med_fm)
+        obj_lrg, w_lrg, h_lrg = self.lrg_decoder(lrg_fm)
 
         return {
-            "sml": {
-                "obj": g3,
-                "w": cw3,
-                "h": ch3,
-                "gaussian": g3,
-                "cov_h": ch3,
-                "cov_w": cw3,
-            },
-            "med": {
-                "obj": g4,
-                "w": cw4,
-                "h": ch4,
-                "gaussian": g4,
-                "cov_h": ch4,
-                "cov_w": cw4,
-            },
-            "lrg": {
-                "obj": g5,
-                "w": cw5,
-                "h": ch5,
-                "gaussian": g5,
-                "cov_h": ch5,
-                "cov_w": cw5,
-            },
-            "P3": {
-                "obj": g3,
-                "w": cw3,
-                "h": ch3,
-                "gaussian": g3,
-                "cov_h": ch3,
-                "cov_w": cw3,
-            },
-            "P4": {
-                "obj": g4,
-                "w": cw4,
-                "h": ch4,
-                "gaussian": g4,
-                "cov_h": ch4,
-                "cov_w": cw4,
-            },
-            "P5": {
-                "obj": g5,
-                "w": cw5,
-                "h": ch5,
-                "gaussian": g5,
-                "cov_h": ch5,
-                "cov_w": cw5,
-            },
+            "sml": {"obj": obj_sml, "w": w_sml, "h": h_sml},
+            "med": {"obj": obj_med, "w": w_med, "h": h_med},
+            "lrg": {"obj": obj_lrg, "w": w_lrg, "h": h_lrg},
         }
-
-
-# Aliases
-FeaturePyramidNetwork = FPN
-Decoder = HeadBlock
-CustomFPNModel = BFOR_model

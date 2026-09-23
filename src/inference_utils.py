@@ -5,98 +5,6 @@ from matplotlib import patches
 from torchvision import ops
 
 
-def filter_boxes_not_on_padding_448(
-    boxes,
-    scores=None,
-    meta=None,
-    keep_mode="overlap",
-    min_valid_overlap=0.90,
-):
-    """
-    Removes candidate detections that fall into the letterbox padding area,
-    strictly following the authors' official filter_boxes_not_on_padding_448.
-
-    Args:
-        boxes: [N, 4] with [x1, y1, x2, y2] in 448x448 canvas coordinates.
-        scores: Optional [N] score tensor.
-        meta: Dict containing {'orig_w', 'orig_h', 's', 'pad_left', 'pad_top'}.
-        keep_mode: 'overlap' (box overlap on real image >= min_valid_overlap) or 'center'.
-        min_valid_overlap: Minimum overlap fraction required (default 0.90).
-    """
-    if meta is None or len(boxes) == 0:
-        if scores is not None:
-            return boxes, scores
-        return boxes
-
-    scale = 448.0 / float(meta["s"])
-    pad_left = float(meta["pad_left"])
-    pad_top = float(meta["pad_top"])
-    orig_w = float(meta["orig_w"])
-    orig_h = float(meta["orig_h"])
-
-    valid_x1 = pad_left * scale
-    valid_y1 = pad_top * scale
-    valid_x2 = (pad_left + orig_w) * scale
-    valid_y2 = (pad_top + orig_h) * scale
-
-    if keep_mode == "center":
-        cx = 0.5 * (boxes[:, 0] + boxes[:, 2])
-        cy = 0.5 * (boxes[:, 1] + boxes[:, 3])
-        keep = (
-            (cx >= valid_x1) & (cx <= valid_x2) & (cy >= valid_y1) & (cy <= valid_y2)
-        )
-    elif keep_mode == "overlap":
-        ix1 = torch.clamp(boxes[:, 0], min=valid_x1)
-        iy1 = torch.clamp(boxes[:, 1], min=valid_y1)
-        ix2 = torch.clamp(boxes[:, 2], max=valid_x2)
-        iy2 = torch.clamp(boxes[:, 3], max=valid_y2)
-
-        inter_w = torch.clamp(ix2 - ix1, min=0.0)
-        inter_h = torch.clamp(iy2 - iy1, min=0.0)
-        inter_area = inter_w * inter_h
-
-        box_w = torch.clamp(boxes[:, 2] - boxes[:, 0], min=0.0)
-        box_h = torch.clamp(boxes[:, 3] - boxes[:, 1], min=0.0)
-        box_area = box_w * box_h
-
-        overlap_frac = inter_area / torch.clamp(box_area, min=1e-6)
-        keep = (box_area > 0.0) & (overlap_frac >= min_valid_overlap)
-    else:
-        raise ValueError(f"Unknown keep_mode: {keep_mode}")
-
-    if scores is not None:
-        return boxes[keep], scores[keep]
-    return boxes[keep]
-
-
-def boxes_padded_to_orig_xyxy(boxes_448, meta):
-    """
-    Transforms predicted bounding boxes from 448x448 canvas coordinates back
-    to the original unpadded image coordinates [0, orig_w] x [0, orig_h],
-    matching the official boxes_padded_to_orig_xyxy from fpn_coco_evaluation.py.
-    """
-    if len(boxes_448) == 0 or meta is None:
-        return boxes_448
-
-    scale = 448.0 / float(meta["s"])
-    pad_left = float(meta["pad_left"])
-    pad_top = float(meta["pad_top"])
-    orig_w = float(meta["orig_w"])
-    orig_h = float(meta["orig_h"])
-
-    x1 = (boxes_448[:, 0] / scale) - pad_left
-    y1 = (boxes_448[:, 1] / scale) - pad_top
-    x2 = (boxes_448[:, 2] / scale) - pad_left
-    y2 = (boxes_448[:, 3] / scale) - pad_top
-
-    x1 = torch.clamp(x1, min=0.0, max=orig_w)
-    y1 = torch.clamp(y1, min=0.0, max=orig_h)
-    x2 = torch.clamp(x2, min=0.0, max=orig_w)
-    y2 = torch.clamp(y2, min=0.0, max=orig_h)
-
-    return torch.stack([x1, y1, x2, y2], dim=-1)
-
-
 def decode_predictions(
     out,
     r=9,
@@ -106,7 +14,6 @@ def decode_predictions(
     h_min=6.0,
     iou_thresh=0.5,
     max_detections=1000,
-    meta=None,
 ):
     """
     Decodes raw model outputs into ranked, class-agnostic bounding boxes
@@ -121,7 +28,6 @@ def decode_predictions(
         w_min, h_min: Minimum decoded box dimensions in pixels (default 6.0, Eq. 3)
         iou_thresh: IoU threshold for cross-scale NMS (default 0.5)
         max_detections: Maximum detections to retain after NMS (default 1000)
-        meta: Optional image metadata dict for padding box removal
 
     Returns:
         final_boxes: Tensor of shape [N, 4] with [x1, y1, x2, y2] in [0, 448] canvas coordinates.
@@ -205,16 +111,6 @@ def decode_predictions(
 
     final_boxes = all_boxes[keep]
     final_scores = all_scores[keep]
-
-    # Step 9: Remove detections lying on letterbox padding
-    if meta is not None:
-        final_boxes, final_scores = filter_boxes_not_on_padding_448(
-            boxes=final_boxes,
-            scores=final_scores,
-            meta=meta,
-            keep_mode="overlap",
-            min_valid_overlap=0.90,
-        )
 
     return final_boxes, final_scores
 

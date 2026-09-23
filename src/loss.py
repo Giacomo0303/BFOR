@@ -3,27 +3,13 @@ from torch import nn
 
 
 class BFOR_Loss(nn.Module):
-    def __init__(
-        self,
-        alpha,
-        lambda_ctr,
-        k,
-        device,
-        lambda_bg=0.2,
-        bg_samples=256,
-        sml_cutoff=64.0,
-        lrg_cutoff=96.0,
-    ):
+    def __init__(self, alpha, lambda_ctr, k, device):
         super().__init__()
 
         self.alpha = alpha
         self.lambda_ctr = lambda_ctr
         self.k = k
         self.device = device
-        self.lambda_bg = lambda_bg
-        self.bg_samples = bg_samples
-        self.sml_cutoff = sml_cutoff
-        self.lrg_cutoff = lrg_cutoff
 
     # preds should be a dictionary
     # {"sml" or "med" or "lrg": {obj: [B, 1, 448, 448], w: [B, 1, 448, 448], h: [B, 1, 448, 448]}
@@ -46,75 +32,9 @@ class BFOR_Loss(nn.Module):
                     valid_images += 1
 
             if valid_images == 0:
-                fg_loss = torch.tensor(0.0, device=self.device)
-            else:
-                fg_loss = total_loss / valid_images
+                return torch.tensor(0.0, device=self.device)
 
-            if self.lambda_bg > 0.0:
-                bg_scale_loss = self.compute_bg_scale_loss(preds, targets)
-                return fg_loss + self.lambda_bg * bg_scale_loss
-
-            return fg_loss
-
-    def compute_bg_scale_loss(self, preds, targets):
-        """
-        Samples random background points outside all ground truth bounding boxes
-        and penalizes predicted width and height towards zero, stabilizing the
-        ReLU scale heads on non-object regions (matching authors' CustomLoss2).
-        """
-        batch_size = len(targets)
-        scales = ["sml", "med", "lrg"]
-        total_bg_loss = torch.tensor(0.0, device=self.device)
-        valid_bg_count = 0
-
-        for b in range(batch_size):
-            tgt_boxes = targets[b]
-            xs = torch.randint(
-                0, 448, (self.bg_samples,), device=self.device, dtype=torch.long
-            )
-            ys = torch.randint(
-                0, 448, (self.bg_samples,), device=self.device, dtype=torch.long
-            )
-
-            if tgt_boxes.shape[0] > 0:
-                boxes_px = tgt_boxes * 448.0
-                x1 = boxes_px[:, 0] - boxes_px[:, 2] / 2.0
-                y1 = boxes_px[:, 1] - boxes_px[:, 3] / 2.0
-                x2 = boxes_px[:, 0] + boxes_px[:, 2] / 2.0
-                y2 = boxes_px[:, 1] + boxes_px[:, 3] / 2.0
-
-                # Determine which sample points fall inside any GT box
-                in_x = (xs.unsqueeze(1) >= x1.unsqueeze(0)) & (
-                    xs.unsqueeze(1) <= x2.unsqueeze(0)
-                )
-                in_y = (ys.unsqueeze(1) >= y1.unsqueeze(0)) & (
-                    ys.unsqueeze(1) <= y2.unsqueeze(0)
-                )
-                inside_any = (in_x & in_y).any(dim=1)
-                bg_mask = ~inside_any
-
-                bg_xs = xs[bg_mask]
-                bg_ys = ys[bg_mask]
-            else:
-                bg_xs = xs
-                bg_ys = ys
-
-            if bg_xs.numel() > 0:
-                img_scale_bg = torch.tensor(0.0, device=self.device)
-                for s in scales:
-                    w_map = preds[s]["w"][b, 0].float()
-                    h_map = preds[s]["h"][b, 0].float()
-                    w_bg = w_map[bg_ys, bg_xs]
-                    h_bg = h_map[bg_ys, bg_xs]
-                    img_scale_bg = (
-                        img_scale_bg + torch.abs(w_bg).mean() + torch.abs(h_bg).mean()
-                    )
-                total_bg_loss = total_bg_loss + (img_scale_bg / len(scales))
-                valid_bg_count += 1
-
-        if valid_bg_count > 0:
-            return total_bg_loss / valid_bg_count
-        return torch.tensor(0.0, device=self.device)
+            return total_loss / valid_images
 
     def compute_image_loss(self, img_num, preds, tgt_boxes):
         num_boxes = tgt_boxes.shape[0]
@@ -149,9 +69,9 @@ class BFOR_Loss(nn.Module):
         # box is [c_x, c_y, w, h]
         size = torch.sqrt(box[2] * box[3])
 
-        if size < self.sml_cutoff:
+        if size < 32.0:
             return "sml"
-        elif size >= self.lrg_cutoff:
+        elif size >= 96.0:
             return "lrg"
         else:
             return "med"
