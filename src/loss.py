@@ -69,7 +69,7 @@ class BFOR_Loss(nn.Module):
         # box is [c_x, c_y, w, h]
         size = torch.sqrt(box[2] * box[3])
 
-        if size < 32.0:
+        if size < 64.0:
             return "sml"
         elif size >= 96.0:
             return "lrg"
