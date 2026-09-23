@@ -1,7 +1,7 @@
 # Data
 DATA_PATH = "Data"
 TRAIN_SIZE = 0.9
-BATCH_SIZE = 3
+BATCH_SIZE = 4
 NUM_WORKERS = 4
 SEED = 42
 
