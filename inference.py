@@ -41,7 +41,7 @@ def execute_inference(
     found_idx = None
     for _ in range(50):
         candidate_idx = randint(0, len(test_set) - 1)
-        _, target = test_set[candidate_idx]
+        _, target, _ = test_set[candidate_idx]
         if len(target) > 0:
             found_idx = candidate_idx
             break
@@ -50,7 +50,7 @@ def execute_inference(
         found_idx = randint(0, len(test_set) - 1)
 
     print(f"Testing on image index: {found_idx}")
-    img, target = test_set[found_idx]
+    img, target, labels = test_set[found_idx]
     img_batch = img.unsqueeze(0).to(device)
 
     # Forward pass
