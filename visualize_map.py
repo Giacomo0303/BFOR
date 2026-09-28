@@ -1,5 +1,6 @@
 import argparse
 import os
+import random
 import matplotlib.patches as patches
 import matplotlib.pyplot as plt
 import numpy as np
@@ -207,7 +208,6 @@ def visualize_full_grid(
     save_path="heatmaps.png",
     colormap="jet",
     pixel_scale=True,
-    show=False,
 ):
     """
     Renders a 4x3 grid:
@@ -303,9 +303,6 @@ def visualize_full_grid(
         plt.savefig(save_path, bbox_inches="tight", dpi=150)
         print(f"Full visualization grid successfully saved to: {save_path}")
 
-    if show:
-        plt.show()
-
     plt.close(fig)
 
 
@@ -348,11 +345,6 @@ def main():
         action="store_true",
         help="Display width and height normalized in [0, 1] instead of pixels in [0, 448].",
     )
-    parser.add_argument(
-        "--show",
-        action="store_true",
-        help="Display the plot interactively using plt.show().",
-    )
 
     args = parser.parse_args()
 
@@ -379,16 +371,19 @@ def main():
 
         if args.index is not None:
             idx = args.index
+            print(f"Using specified Pascal VOC test set sample at index {idx}")
         else:
-            # Pick a sample that contains unseen objects if possible
-            idx = 0
-            for i in range(min(500, len(test_set))):
-                _, target, _ = test_set[i]
+            # Randomly select a test sample containing unseen objects (boat, cow, tvmonitor)
+            found_idx = None
+            for _ in range(100):
+                cand = random.randint(0, len(test_set) - 1)
+                _, target, _ = test_set[cand]
                 if len(target) > 0:
-                    idx = i
+                    found_idx = cand
                     break
+            idx = found_idx if found_idx is not None else random.randint(0, len(test_set) - 1)
+            print(f"Randomly selected Pascal VOC test set sample at index: {idx}")
 
-        print(f"Using Pascal VOC test set sample at index {idx}")
         image_input, gt_boxes, labels = test_set[idx]
         print(f"Ground truth labels in image: {labels}")
 
@@ -420,7 +415,6 @@ def main():
         save_path=args.save_path,
         colormap=args.colormap,
         pixel_scale=pixel_scale,
-        show=args.show,
     )
 
 
