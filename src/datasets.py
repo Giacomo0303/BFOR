@@ -8,12 +8,20 @@ from torchvision.datasets import VOCDetection
 
 
 class PascalVOC(Dataset):
-    def __init__(self, path, split="train", train_size=0.9, seed=42):
+    def __init__(self, path, split="train", train_size=0.9, seed=42, all_classes=None):
         super().__init__()
         self.split = split
         self.path = path
         self.train_size = train_size
         self.seed = seed
+
+        if all_classes is None:
+            try:
+                import run_config as cfg
+                all_classes = getattr(cfg, "ALL_CLASSES", False)
+            except Exception:
+                all_classes = False
+        self.all_classes = all_classes
 
         if self.split in ["train", "val"]:
             voc2007_train = VOCDetection(
@@ -65,10 +73,14 @@ class PascalVOC(Dataset):
             "train",
         }
         UNSEEN_CLASSES = {"boat", "cow", "tvmonitor"}
+        ALL_CLASSES = SEEN_CLASSES | UNSEEN_CLASSES
 
-        self.target_classes = (
-            SEEN_CLASSES if self.split in ["train", "val"] else UNSEEN_CLASSES
-        )
+        if self.all_classes:
+            self.target_classes = ALL_CLASSES
+        else:
+            self.target_classes = (
+                SEEN_CLASSES if self.split in ["train", "val"] else UNSEEN_CLASSES
+            )
 
     def __len__(self):
         return len(self.dataset)

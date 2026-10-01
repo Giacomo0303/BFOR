@@ -12,6 +12,8 @@ ALPHA = 0.1
 LAMBDA_CTR = 1.0
 K = 9
 
+ALL_CLASSES = True
+
 # Training
 EPOCHS = 100
 LR = 1e-4
@@ -20,4 +22,4 @@ LR_FACTOR = 0.3
 MIN_LR_SCHEDULER = 1e-9
 EARLY_STOPPING_PATIENCE = 10
 DEVICE = "cuda"
-SAVE_PATH = "best_model.pt"
+SAVE_PATH = "best_model_voc20.pt"
