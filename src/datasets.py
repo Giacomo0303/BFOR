@@ -1,10 +1,11 @@
 import random
 from os.path import join
+
 import torch
 import torchvision.transforms.functional as F
 from torch import Generator
 from torch.utils.data import ConcatDataset, Dataset, random_split
-from torchvision.datasets import VOCDetection, CocoDetection
+from torchvision.datasets import CocoDetection, VOCDetection
 
 
 class PascalVOC(Dataset):
@@ -190,6 +191,8 @@ class COCO2017(Dataset):
                 ),
             )
 
+            self.coco = coco_train.coco
+
             gen = Generator().manual_seed(self.seed)
 
             train_set, val_set = random_split(
@@ -210,11 +213,14 @@ class COCO2017(Dataset):
                     self.path, "coco17", "annotations", "instances_val2017.json"
                 ),
             )
+            self.coco = self.dataset.coco
         else:
             raise ValueError("split has to be 'train', 'val' or 'test'")
 
-        VOC_IN_COCO = {
-            "airplane",
+        ALL_CLASSES = {cls["name"] for cls in self.coco.cats.values()}
+
+        VOC_CLASSES = {
+            "airplane",  # su VOC è 'aeroplane'
             "bicycle",
             "bird",
             "boat",
@@ -223,24 +229,77 @@ class COCO2017(Dataset):
             "car",
             "cat",
             "chair",
+            "couch",  # su VOC è 'sofa'
             "cow",
-            "dining table",
+            "dining table",  # su VOC è 'diningtable' (con lo spazio)
             "dog",
             "horse",
-            "motorcycle",
+            "motorcycle",  # su VOC è 'motorbike'
             "person",
-            "potted plant",
+            "potted plant",  # su VOC è 'pottedplant' (con lo spazio)
             "sheep",
-            "couch",
             "train",
-            "tv",
+            "tv",  # su VOC è 'tvmonitor'
         }
-
-        ALL_CLASSES = SEEN_CLASSES | UNSEEN_CLASSES
 
         if self.all_classes:
             self.target_classes = ALL_CLASSES
         else:
-            self.target_classes = (
-                SEEN_CLASSES if self.split in ["train", "val"] else UNSEEN_CLASSES
-            )
+            self.target_classes = ALL_CLASSES - VOC_CLASSES
+
+        self.target_cat_ids = {
+            cat_id: cat["name"] for cat_id, cat in self.coco.cats.items()
+        }
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx):
+        img, target = self.dataset[idx]
+        target = [
+            (tgt["bbox"], self.target_cat_ids[tgt["category_id"]])
+            for tgt in target
+            if tgt["iscrowd"] == 0
+        ]
+
+        final_target = [tgt[0] for tgt in target if tgt[1] in self.target_classes]
+        labels = [tgt[1] for tgt in target if tgt[1] in self.target_classes]
+
+        w, h = img.size
+        s = max(w, h)
+
+        pad_left = (s - w) // 2
+        pad_right = s - w - pad_left
+        pad_top = (s - h) // 2
+        pad_bottom = s - h - pad_top
+
+        padded_img = F.pad(
+            img, padding=[pad_left, pad_top, pad_right, pad_bottom], fill=0
+        )
+        resized_img = F.resize(padded_img, [448, 448])
+        tensor_img = F.to_tensor(resized_img)
+
+        norm_boxes = []
+        for x, y, w, h in final_target:
+            cx = (x + pad_left + w / 2.0) / float(s)
+            cy = (y + pad_top + h / 2.0) / float(s)
+            w_norm = w / float(s)
+            h_norm = h / float(s)
+
+            norm_boxes.append([cx, cy, w_norm, h_norm])
+
+        if len(norm_boxes) == 0:
+            boxes_tensor = torch.zeros((0, 4), dtype=torch.float32)
+        else:
+            boxes_tensor = torch.tensor(norm_boxes, dtype=torch.float32)
+
+        if self.split == "test":
+            return tensor_img, boxes_tensor, labels
+
+        return tensor_img, boxes_tensor
+
+    @staticmethod
+    def collate_fn(batch):
+        images = torch.stack([item[0] for item in batch], dim=0)
+        targets = [item[1] for item in batch]
+        return images, targets

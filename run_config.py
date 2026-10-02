@@ -1,5 +1,5 @@
 # Data
-DATA_PATH = "Data"
+DATA_PATH = "/mnt/external_ssd/Datasets"
 TRAIN_SIZE = 0.9
 BATCH_SIZE = 4
 NUM_WORKERS = 4
