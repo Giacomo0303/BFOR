@@ -5,7 +5,7 @@ from torchvision.ops import box_convert, box_iou
 from tqdm import tqdm
 
 import run_config as cfg
-from src.datasets import PascalVOC
+from src.datasets import COCO2017, PascalVOC
 from src.inference_utils import decode_predictions
 from src.model import BFOR_model
 from src.train import load_model
@@ -114,7 +114,29 @@ def compute_AR(model, test_set, device, minIoU=0.5, max_detections=1000):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Evaluate B-FOR on Pascal VOC test set.")
+    parser = argparse.ArgumentParser(
+        description="Evaluate B-FOR on Pascal VOC or MS-COCO 2017 test sets."
+    )
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        choices=["voc", "coco"],
+        default="voc",
+        help="Dataset to evaluate on: 'voc' or 'coco' (default: 'voc').",
+    )
+    parser.add_argument(
+        "--data-path",
+        type=str,
+        default=getattr(cfg, "DATA_PATH", "Data"),
+        help="Path to datasets root folder (default: cfg.DATA_PATH).",
+    )
+    parser.add_argument(
+        "--split",
+        type=str,
+        default="test",
+        choices=["train", "val", "test"],
+        help="Split to evaluate on (default: 'test').",
+    )
     parser.add_argument(
         "--checkpoint",
         type=str,
@@ -124,13 +146,14 @@ def main():
     parser.add_argument(
         "--all-classes",
         action="store_true",
-        default=getattr(cfg, "ALL_CLASSES", True),
-        help="Evaluate on all 20 VOC categories.",
+        default=False,
+        help="Evaluate on all classes (20 for VOC, 80 for COCO).",
     )
     parser.add_argument(
         "--unseen-only",
         action="store_true",
-        help="Evaluate only on the 3 unseen categories (boat, cow, tvmonitor).",
+        default=False,
+        help="Evaluate on unseen classes only (3 for VOC, 60 for COCO).",
     )
     args = parser.parse_args()
 
@@ -138,18 +161,47 @@ def main():
     if checkpoint_path is None:
         if os.path.exists(cfg.SAVE_PATH):
             checkpoint_path = cfg.SAVE_PATH
+        elif os.path.exists("best_model_voc20.pt"):
+            checkpoint_path = "best_model_voc20.pt"
         elif os.path.exists("best_model.pt"):
             checkpoint_path = "best_model.pt"
         else:
             checkpoint_path = cfg.SAVE_PATH
 
-    eval_all = False if args.unseen_only else args.all_classes
+    if args.unseen_only:
+        eval_all = False
+    elif args.all_classes:
+        eval_all = True
+    else:
+        # Default behavior when neither flag is explicitly passed
+        eval_all = getattr(cfg, "ALL_CLASSES", True) if args.dataset == "voc" else False
 
     device = cfg.DEVICE if torch.cuda.is_available() else "cpu"
 
-    mode_str = "All 20 Categories" if eval_all else "3 Unseen Categories (17/3 split)"
-    print(f"Loading PASCAL VOC test set [{mode_str}]...")
-    test_set = PascalVOC(path=cfg.DATA_PATH, split="test", all_classes=eval_all)
+    if args.dataset == "coco":
+        mode_str = (
+            "All 80 Categories"
+            if eval_all
+            else "60 Unseen Categories (VOC20 -> COCO60)"
+        )
+        print(f"Loading MS-COCO 2017 {args.split} set [{mode_str}]...")
+        test_set = COCO2017(
+            path=args.data_path,
+            split=args.split,
+            all_classes=eval_all,
+        )
+    else:
+        mode_str = (
+            "All 20 Categories"
+            if eval_all
+            else "3 Unseen Categories (17/3 split)"
+        )
+        print(f"Loading PASCAL VOC {args.split} set [{mode_str}]...")
+        test_set = PascalVOC(
+            path=args.data_path,
+            split=args.split,
+            all_classes=eval_all,
+        )
 
     model = BFOR_model(n_channels=cfg.N_CHANNELS, drop_rate=cfg.DROP_RATE).to(device)
 
