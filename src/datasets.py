@@ -1,10 +1,10 @@
 import random
-
+from os.path import join
 import torch
 import torchvision.transforms.functional as F
 from torch import Generator
 from torch.utils.data import ConcatDataset, Dataset, random_split
-from torchvision.datasets import VOCDetection
+from torchvision.datasets import VOCDetection, CocoDetection
 
 
 class PascalVOC(Dataset):
@@ -18,6 +18,7 @@ class PascalVOC(Dataset):
         if all_classes is None:
             try:
                 import run_config as cfg
+
                 all_classes = getattr(cfg, "ALL_CLASSES", False)
             except Exception:
                 all_classes = False
@@ -162,3 +163,84 @@ class PascalVOC(Dataset):
         images = torch.stack([item[0] for item in batch], dim=0)
         targets = [item[1] for item in batch]
         return images, targets
+
+
+class COCO2017(Dataset):
+    def __init__(self, path, split="train", train_size=0.9, seed=42, all_classes=None):
+        super().__init__()
+        self.split = split
+        self.path = path
+        self.train_size = train_size
+        self.seed = seed
+
+        if all_classes is None:
+            try:
+                import run_config as cfg
+
+                all_classes = getattr(cfg, "ALL_CLASSES", False)
+            except Exception:
+                all_classes = False
+        self.all_classes = all_classes
+
+        if self.split in ["train", "val"]:
+            coco_train = CocoDetection(
+                root=join(self.path, "coco17", "train2017"),
+                annFile=join(
+                    self.path, "coco17", "annotations", "instances_train2017.json"
+                ),
+            )
+
+            gen = Generator().manual_seed(self.seed)
+
+            train_set, val_set = random_split(
+                coco_train,
+                lengths=[self.train_size, 1.0 - self.train_size],
+                generator=gen,
+            )
+
+            if self.split == "train":
+                self.dataset = train_set
+            else:
+                self.dataset = val_set
+
+        elif self.split == "test":
+            self.dataset = CocoDetection(
+                root=join(self.path, "coco17", "val2017"),
+                annFile=join(
+                    self.path, "coco17", "annotations", "instances_val2017.json"
+                ),
+            )
+        else:
+            raise ValueError("split has to be 'train', 'val' or 'test'")
+
+        VOC_IN_COCO = {
+            "airplane",
+            "bicycle",
+            "bird",
+            "boat",
+            "bottle",
+            "bus",
+            "car",
+            "cat",
+            "chair",
+            "cow",
+            "dining table",
+            "dog",
+            "horse",
+            "motorcycle",
+            "person",
+            "potted plant",
+            "sheep",
+            "couch",
+            "train",
+            "tv",
+        }
+
+        ALL_CLASSES = SEEN_CLASSES | UNSEEN_CLASSES
+
+        if self.all_classes:
+            self.target_classes = ALL_CLASSES
+        else:
+            self.target_classes = (
+                SEEN_CLASSES if self.split in ["train", "val"] else UNSEEN_CLASSES
+            )
