@@ -8,8 +8,25 @@ from torch.utils.data import ConcatDataset, Dataset, random_split
 from torchvision.datasets import CocoDetection, VOCDetection
 
 
+VOC_CLASSES = (
+    "aeroplane", "bicycle", "bird", "boat", "bottle",
+    "bus", "car", "cat", "chair", "cow",
+    "diningtable", "dog", "horse", "motorbike", "person",
+    "pottedplant", "sheep", "sofa", "train", "tvmonitor"
+)
+VOC_CLASS_TO_IDX = {name: i + 1 for i, name in enumerate(VOC_CLASSES)}
+
+
 class PascalVOC(Dataset):
-    def __init__(self, path, split="train", train_size=0.9, seed=42, all_classes=None):
+    def __init__(
+        self,
+        path,
+        split="train",
+        train_size=0.9,
+        seed=42,
+        all_classes=None,
+        model_type=None,
+    ):
         super().__init__()
         self.split = split
         self.path = path
@@ -24,6 +41,15 @@ class PascalVOC(Dataset):
             except Exception:
                 all_classes = False
         self.all_classes = all_classes
+
+        if model_type is None:
+            try:
+                import run_config as cfg
+
+                model_type = getattr(cfg, "MODEL_NAME", "bfor")
+            except Exception:
+                model_type = "bfor"
+        self.model_type = model_type
 
         if self.split in ["train", "val"]:
             voc2007_train = VOCDetection(
@@ -97,10 +123,45 @@ class PascalVOC(Dataset):
         if not isinstance(bboxes, list):
             bboxes = [bboxes]
 
+        # Mode FCOS: native resolution, xyxy pixel boxes and integer class IDs
+        if self.model_type == "fcos":
+            tensor_img = F.to_tensor(img)
+            fcos_boxes = []
+            fcos_labels = []
+            for box in bboxes:
+                if box["name"] in self.target_classes:
+                    if self.split == "train" and box.get("difficult", "0") == "1":
+                        continue
+                    b = box["bndbox"]
+                    x1 = float(b["xmin"])
+                    y1 = float(b["ymin"])
+                    x2 = float(b["xmax"])
+                    y2 = float(b["ymax"])
+                    if x2 > x1 and y2 > y1:
+                        fcos_boxes.append([x1, y1, x2, y2])
+                        fcos_labels.append(VOC_CLASS_TO_IDX[box["name"]])
+                        labels.append(box["name"])
+
+            if len(fcos_boxes) == 0:
+                target_dict = {
+                    "boxes": torch.zeros((0, 4), dtype=torch.float32),
+                    "labels": torch.zeros((0,), dtype=torch.int64),
+                }
+            else:
+                target_dict = {
+                    "boxes": torch.tensor(fcos_boxes, dtype=torch.float32),
+                    "labels": torch.tensor(fcos_labels, dtype=torch.int64),
+                }
+
+            if self.split == "test":
+                return tensor_img, target_dict, labels
+
+            return tensor_img, target_dict
+
+        # Mode B-FOR: 448x448 padded canvas and normalized cxcywh boxes
         final_bboxes = []
         for box in bboxes:
             if box["name"] in self.target_classes:
-                # ignore difficult objects during training
                 if box.get("difficult", "0") == "1":
                     continue
 
@@ -135,13 +196,11 @@ class PascalVOC(Dataset):
 
         norm_boxes = []
         for xmin, ymin, xmax, ymax in final_bboxes:
-            # shift by the padding applied to the image
             shifted_xmin = xmin + pad_left
             shifted_xmax = xmax + pad_left
             shifted_ymin = ymin + pad_top
             shifted_ymax = ymax + pad_top
 
-            # convert to normalized [cx, cy, w, h] in [0, 1]
             cx = (shifted_xmin + shifted_xmax) / (2.0 * s)
             cy = (shifted_ymin + shifted_ymax) / (2.0 * s)
             w_box = (shifted_xmax - shifted_xmin) / float(s)
@@ -161,13 +220,25 @@ class PascalVOC(Dataset):
 
     @staticmethod
     def collate_fn(batch):
+        if len(batch) > 0 and isinstance(batch[0][1], dict):
+            images = tuple(item[0] for item in batch)
+            targets = tuple(item[1] for item in batch)
+            return images, targets
         images = torch.stack([item[0] for item in batch], dim=0)
         targets = [item[1] for item in batch]
         return images, targets
 
 
 class COCO2017(Dataset):
-    def __init__(self, path, split="train", train_size=0.9, seed=42, all_classes=None):
+    def __init__(
+        self,
+        path,
+        split="train",
+        train_size=0.9,
+        seed=42,
+        all_classes=None,
+        model_type=None,
+    ):
         super().__init__()
         self.split = split
         self.path = path
@@ -182,6 +253,15 @@ class COCO2017(Dataset):
             except Exception:
                 all_classes = False
         self.all_classes = all_classes
+
+        if model_type is None:
+            try:
+                import run_config as cfg
+
+                model_type = getattr(cfg, "MODEL_NAME", "bfor")
+            except Exception:
+                model_type = "bfor"
+        self.model_type = model_type
 
         if self.split in ["train", "val"]:
             coco_train = CocoDetection(
@@ -219,8 +299,8 @@ class COCO2017(Dataset):
 
         ALL_CLASSES = {cls["name"] for cls in self.coco.cats.values()}
 
-        VOC_CLASSES = {
-            "airplane",  # su VOC è 'aeroplane'
+        VOC_CLASSES_SET = {
+            "airplane",
             "bicycle",
             "bird",
             "boat",
@@ -229,23 +309,23 @@ class COCO2017(Dataset):
             "car",
             "cat",
             "chair",
-            "couch",  # su VOC è 'sofa'
+            "couch",
             "cow",
-            "dining table",  # su VOC è 'diningtable' (con lo spazio)
+            "dining table",
             "dog",
             "horse",
-            "motorcycle",  # su VOC è 'motorbike'
+            "motorcycle",
             "person",
-            "potted plant",  # su VOC è 'pottedplant' (con lo spazio)
+            "potted plant",
             "sheep",
             "train",
-            "tv",  # su VOC è 'tvmonitor'
+            "tv",
         }
 
         if self.all_classes:
             self.target_classes = ALL_CLASSES
         else:
-            self.target_classes = ALL_CLASSES - VOC_CLASSES
+            self.target_classes = ALL_CLASSES - VOC_CLASSES_SET
 
         self.target_cat_ids = {
             cat_id: cat["name"] for cat_id, cat in self.coco.cats.items()
@@ -262,6 +342,42 @@ class COCO2017(Dataset):
             if tgt["iscrowd"] == 0
         ]
 
+        # Mode FCOS: native resolution, xyxy pixel boxes and integer class IDs
+        if self.model_type == "fcos":
+            tensor_img = F.to_tensor(img)
+            fcos_boxes = []
+            fcos_labels = []
+            labels = []
+            for tgt in target:
+                cat_name = tgt[1]
+                if cat_name in self.target_classes:
+                    x, y, w_box, h_box = tgt[0]
+                    x1 = float(x)
+                    y1 = float(y)
+                    x2 = x1 + float(w_box)
+                    y2 = y1 + float(h_box)
+                    if x2 > x1 and y2 > y1:
+                        fcos_boxes.append([x1, y1, x2, y2])
+                        fcos_labels.append(VOC_CLASS_TO_IDX.get(cat_name, 1))
+                        labels.append(cat_name)
+
+            if len(fcos_boxes) == 0:
+                target_dict = {
+                    "boxes": torch.zeros((0, 4), dtype=torch.float32),
+                    "labels": torch.zeros((0,), dtype=torch.int64),
+                }
+            else:
+                target_dict = {
+                    "boxes": torch.tensor(fcos_boxes, dtype=torch.float32),
+                    "labels": torch.tensor(fcos_labels, dtype=torch.int64),
+                }
+
+            if self.split == "test":
+                return tensor_img, target_dict, labels
+
+            return tensor_img, target_dict
+
+        # Mode B-FOR: 448x448 padded canvas and normalized cxcywh boxes
         final_target = [tgt[0] for tgt in target if tgt[1] in self.target_classes]
         labels = [tgt[1] for tgt in target if tgt[1] in self.target_classes]
 
@@ -280,11 +396,11 @@ class COCO2017(Dataset):
         tensor_img = F.to_tensor(resized_img)
 
         norm_boxes = []
-        for x, y, w, h in final_target:
-            cx = (x + pad_left + w / 2.0) / float(s)
-            cy = (y + pad_top + h / 2.0) / float(s)
-            w_norm = w / float(s)
-            h_norm = h / float(s)
+        for x, y, bw, bh in final_target:
+            cx = (x + pad_left + bw / 2.0) / float(s)
+            cy = (y + pad_top + bh / 2.0) / float(s)
+            w_norm = bw / float(s)
+            h_norm = bh / float(s)
 
             norm_boxes.append([cx, cy, w_norm, h_norm])
 
@@ -300,6 +416,10 @@ class COCO2017(Dataset):
 
     @staticmethod
     def collate_fn(batch):
+        if len(batch) > 0 and isinstance(batch[0][1], dict):
+            images = tuple(item[0] for item in batch)
+            targets = tuple(item[1] for item in batch)
+            return images, targets
         images = torch.stack([item[0] for item in batch], dim=0)
         targets = [item[1] for item in batch]
         return images, targets

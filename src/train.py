@@ -4,27 +4,42 @@ import torch
 from tqdm import tqdm
 
 
-def train_epoch(model, dataloader, loss_fn, optimizer, scaler, device, epoch=None):
+def train_epoch(
+    model, dataloader, loss_fn, optimizer, scaler, device, epoch=None, max_grad_norm=10.0
+):
     model.train()
     running_loss = 0.0
 
     desc = f"Epoch {epoch:03d} [Train]" if epoch is not None else "Training"
     pbar = tqdm(dataloader, desc=desc, leave=False)
+    device_type = "cuda" if "cuda" in str(device) else "cpu"
 
     for batch_idx, (x, y) in enumerate(pbar):
         optimizer.zero_grad()
 
-        x = x.to(device, non_blocking=True)
-        y = [b.to(device, non_blocking=True) for b in y]
-
-        device_type = "cuda" if "cuda" in str(device) else "cpu"
-        with torch.amp.autocast(device_type=device_type, dtype=torch.float16):
-            out = model(x)
-
-        batch_loss = loss_fn(out, y)
+        if loss_fn is None:
+            # FCOS / Torchvision detection model
+            images = [img.to(device, non_blocking=True) for img in x]
+            targets = [
+                {k: v.to(device, non_blocking=True) for k, v in t.items()}
+                for t in y
+            ]
+            with torch.amp.autocast(device_type=device_type, dtype=torch.float16):
+                loss_dict = model(images, targets)
+                batch_loss = sum(loss_dict.values())
+        else:
+            # B-FOR model
+            x = x.to(device, non_blocking=True)
+            y = [b.to(device, non_blocking=True) for b in y]
+            with torch.amp.autocast(device_type=device_type, dtype=torch.float16):
+                out = model(x)
+            batch_loss = loss_fn(out, y)
 
         if isinstance(batch_loss, torch.Tensor) and batch_loss.requires_grad:
             scaler.scale(batch_loss).backward()
+            if max_grad_norm is not None and max_grad_norm > 0:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
             scaler.step(optimizer)
             scaler.update()
 
@@ -36,19 +51,31 @@ def train_epoch(model, dataloader, loss_fn, optimizer, scaler, device, epoch=Non
         running_loss += loss_val
         current_avg = running_loss / (batch_idx + 1)
 
-        pbar.set_postfix(
-            {
-                "loss": f"{loss_val:.4f}",
-                "avg": f"{current_avg:.4f}",
-                "lr": f"{optimizer.param_groups[0]['lr']:.2e}",
-            }
-        )
+        postfix = {
+            "loss": f"{loss_val:.4f}",
+            "avg": f"{current_avg:.4f}",
+            "lr": f"{optimizer.param_groups[0]['lr']:.2e}",
+        }
+        if loss_fn is None and "loss_dict" in locals():
+            if "classification" in loss_dict:
+                postfix["cls"] = f"{loss_dict['classification'].item():.3f}"
+            if "bbox_regression" in loss_dict:
+                postfix["reg"] = f"{loss_dict['bbox_regression'].item():.3f}"
+            if "bbox_ctrness" in loss_dict:
+                postfix["ctr"] = f"{loss_dict['bbox_ctrness'].item():.3f}"
+
+        pbar.set_postfix(postfix)
 
     return running_loss / len(dataloader)
 
 
 def validate(model, dataloader, loss_fn, device, epoch=None):
-    model.eval()
+    if loss_fn is None:
+        # Torchvision detection models compute loss only when model.training is True
+        model.train()
+    else:
+        model.eval()
+
     running_loss = 0.0
 
     desc = f"Epoch {epoch:03d} [Val]  " if epoch is not None else "Validating"
@@ -57,13 +84,21 @@ def validate(model, dataloader, loss_fn, device, epoch=None):
 
     with torch.no_grad():
         for batch_idx, (x, y) in enumerate(pbar):
-            x = x.to(device, non_blocking=True)
-            y = [b.to(device, non_blocking=True) for b in y]
-
-            with torch.amp.autocast(device_type=device_type, dtype=torch.float16):
-                out = model(x)
-
-            batch_loss = loss_fn(out, y)
+            if loss_fn is None:
+                images = [img.to(device, non_blocking=True) for img in x]
+                targets = [
+                    {k: v.to(device, non_blocking=True) for k, v in t.items()}
+                    for t in y
+                ]
+                with torch.amp.autocast(device_type=device_type, dtype=torch.float16):
+                    loss_dict = model(images, targets)
+                    batch_loss = sum(loss_dict.values())
+            else:
+                x = x.to(device, non_blocking=True)
+                y = [b.to(device, non_blocking=True) for b in y]
+                with torch.amp.autocast(device_type=device_type, dtype=torch.float16):
+                    out = model(x)
+                batch_loss = loss_fn(out, y)
 
             loss_val = (
                 batch_loss.item()
@@ -77,6 +112,7 @@ def validate(model, dataloader, loss_fn, device, epoch=None):
                 {"val_loss": f"{loss_val:.4f}", "avg": f"{current_avg:.4f}"}
             )
 
+    model.eval()
     return running_loss / len(dataloader)
 
 
@@ -92,9 +128,10 @@ def run_training(
     epochs,
     device,
     start_epoch=0,
+    max_grad_norm=10.0,
 ):
     print(f"\n{'=' * 65}")
-    print(f"Starting B-FOR training for {epochs} epochs on device: {device}")
+    print(f"Starting training for {epochs} epochs on device: {device}")
     print(f"Train batches: {len(train_loader)} | Val batches: {len(val_loader)}")
     print(f"{'=' * 65}\n")
 
@@ -110,6 +147,7 @@ def run_training(
             scaler=scaler,
             device=device,
             epoch=epoch + 1,
+            max_grad_norm=max_grad_norm,
         )
 
         # 2. Validation with progress bar

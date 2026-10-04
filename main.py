@@ -1,10 +1,10 @@
 import torch
-from torch.optim import Adam
+from torch.optim import SGD, Adam
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader
 
 import run_config as cfg
-from src.datasets import PascalVOC
+from src.datasets import COCO2017, PascalVOC
 from src.loss import BFOR_Loss
 from src.model import BFOR_model
 from src.train import EarlyStopping, run_training
@@ -12,18 +12,29 @@ from src.train import EarlyStopping, run_training
 
 def main():
     # 1. Datasets & Loaders
-    train_set = PascalVOC(
-        path=cfg.DATA_PATH, split="train", train_size=cfg.TRAIN_SIZE, seed=cfg.SEED
+    dataset_name = getattr(cfg, "DATASET", "voc").lower()
+    DatasetClass = PascalVOC if dataset_name == "voc" else COCO2017
+
+    train_set = DatasetClass(
+        path=cfg.DATA_PATH,
+        split="train",
+        train_size=cfg.TRAIN_SIZE,
+        seed=cfg.SEED,
+        model_type=cfg.MODEL_NAME,
     )
-    val_set = PascalVOC(
-        path=cfg.DATA_PATH, split="val", train_size=cfg.TRAIN_SIZE, seed=cfg.SEED
+    val_set = DatasetClass(
+        path=cfg.DATA_PATH,
+        split="val",
+        train_size=cfg.TRAIN_SIZE,
+        seed=cfg.SEED,
+        model_type=cfg.MODEL_NAME,
     )
 
     train_loader = DataLoader(
         dataset=train_set,
         batch_size=cfg.BATCH_SIZE,
         shuffle=True,
-        collate_fn=PascalVOC.collate_fn,
+        collate_fn=DatasetClass.collate_fn,
         num_workers=cfg.NUM_WORKERS,
         pin_memory=True,
     )
@@ -32,20 +43,47 @@ def main():
         dataset=val_set,
         batch_size=cfg.BATCH_SIZE,
         shuffle=False,
-        collate_fn=PascalVOC.collate_fn,
-        num_workers=cfg.NUM_WORKERS // 2,
+        collate_fn=DatasetClass.collate_fn,
+        num_workers=max(1, cfg.NUM_WORKERS // 2),
         pin_memory=True,
     )
 
     # 2. Model, Loss, Optimizer, Scheduler, Scaler
-    model = BFOR_model(n_channels=cfg.N_CHANNELS, drop_rate=cfg.DROP_RATE).to(
-        cfg.DEVICE
-    )
-    loss = BFOR_Loss(
-        alpha=cfg.ALPHA, lambda_ctr=cfg.LAMBDA_CTR, k=cfg.K, device=cfg.DEVICE
-    )
+    model_name = getattr(cfg, "MODEL_NAME", "fcos").lower()
+    if model_name == "fcos":
+        from src.fcos_model import build_fcos_model
 
-    optimizer = Adam(params=model.parameters(), lr=cfg.LR)
+        model = build_fcos_model(
+            num_classes=getattr(cfg, "FCOS_NUM_CLASSES", 21),
+            pretrained_backbone=getattr(cfg, "FCOS_PRETRAINED_BACKBONE", True),
+        ).to(cfg.DEVICE)
+        loss = None
+    elif model_name == "bfor":
+        model = BFOR_model(n_channels=cfg.N_CHANNELS, drop_rate=cfg.DROP_RATE).to(
+            cfg.DEVICE
+        )
+        loss = BFOR_Loss(
+            alpha=cfg.ALPHA, lambda_ctr=cfg.LAMBDA_CTR, k=cfg.K, device=cfg.DEVICE
+        )
+    else:
+        raise ValueError(f"Unknown MODEL_NAME: '{model_name}'. Choose 'fcos' or 'bfor'.")
+
+    opt_type = getattr(cfg, "OPTIMIZER", "sgd" if model_name == "fcos" else "adam").lower()
+    weight_decay = getattr(cfg, "WEIGHT_DECAY", 0.0)
+    if opt_type == "sgd":
+        optimizer = SGD(
+            params=model.parameters(),
+            lr=cfg.LR,
+            momentum=getattr(cfg, "MOMENTUM", 0.9),
+            weight_decay=weight_decay,
+        )
+    else:
+        optimizer = Adam(
+            params=model.parameters(),
+            lr=cfg.LR,
+            weight_decay=weight_decay,
+        )
+
     lr_scheduler = ReduceLROnPlateau(
         optimizer=optimizer,
         factor=cfg.LR_FACTOR,
@@ -70,6 +108,7 @@ def main():
         early_stopping=early_stopping,
         epochs=cfg.EPOCHS,
         device=cfg.DEVICE,
+        max_grad_norm=getattr(cfg, "MAX_GRAD_NORM", 10.0),
     )
 
 
