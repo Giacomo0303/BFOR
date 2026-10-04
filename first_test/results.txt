@@ -1,0 +1,21 @@
+ Average Precision  (AP) @[ IoU=0.50:0.50 | area=   all | maxDets=100 ] = -1.000
+ Average Precision  (AP) @[ IoU=0.50      | area=   all | maxDets=1000 ] = 0.028
+ Average Precision  (AP) @[ IoU=0.75      | area=   all | maxDets=1000 ] = -1.000
+ Average Precision  (AP) @[ IoU=0.50:0.50 | area= small | maxDets=1000 ] = 0.012
+ Average Precision  (AP) @[ IoU=0.50:0.50 | area=medium | maxDets=1000 ] = 0.035
+ Average Precision  (AP) @[ IoU=0.50:0.50 | area= large | maxDets=1000 ] = 0.044
+ Average Recall     (AR) @[ IoU=0.50:0.50 | area=   all | maxDets=  1 ] = 0.033
+ Average Recall     (AR) @[ IoU=0.50:0.50 | area=   all | maxDets= 10 ] = 0.141
+ Average Recall     (AR) @[ IoU=0.50:0.50 | area=   all | maxDets=1000 ] = 0.433
+ Average Recall     (AR) @[ IoU=0.50:0.50 | area= small | maxDets=1000 ] = 0.081
+ Average Recall     (AR) @[ IoU=0.50:0.50 | area=medium | maxDets=1000 ] = 0.631
+ Average Recall     (AR) @[ IoU=0.50:0.50 | area= large | maxDets=1000 ] = 0.861
+
+=======================================================
+OFFICIAL COCOeval AR@0.5 Breakdown (maxDets=1000):
+-------------------------------------------------------
+  Overall (AROvr) : 43.3%
+  Small   (ARSml) : 8.1%
+  Medium  (ARMed) : 63.1%
+  Large   (ARLrg) : 86.1%
+=======================================================
