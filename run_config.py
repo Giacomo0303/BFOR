@@ -1,5 +1,5 @@
 # Model & Dataset Selection
-MODEL_NAME = "fcos"  # "fcos" or "bfor"
+MODEL_NAME = "bfor_fcos"  # "fcos" or "bfor"
 DATASET = "voc"  # "voc" or "coco"
 
 import os
@@ -29,14 +29,20 @@ ALL_CLASSES = True
 
 # Training
 EPOCHS = 100
-OPTIMIZER = "sgd" if MODEL_NAME == "fcos" else "adam"
-LR = 0.001 if MODEL_NAME == "fcos" else 1e-4
+OPTIMIZER = "sgd" if MODEL_NAME in ["fcos", "bfor_fcos"] else "adam"
+LR = 0.001 if MODEL_NAME in ["fcos", "bfor_fcos"] else 1e-4
 MOMENTUM = 0.9
-WEIGHT_DECAY = 1e-4 if MODEL_NAME == "fcos" else 0.0
+WEIGHT_DECAY = 1e-4 if MODEL_NAME in ["fcos", "bfor_fcos"] else 0.0
 LR_PATIENCE = 5
 LR_FACTOR = 0.3
 MIN_LR_SCHEDULER = 1e-9
 EARLY_STOPPING_PATIENCE = 10
 MAX_GRAD_NORM = 10.0
 DEVICE = "cuda"
-SAVE_PATH = "best_fcos_voc20.pt" if MODEL_NAME == "fcos" else "best_model_voc20.pt"
+
+if MODEL_NAME == "fcos":
+    SAVE_PATH = "best_fcos_voc20.pt"
+elif MODEL_NAME == "bfor_fcos":
+    SAVE_PATH = "best_bfor_fcos_voc20.pt"
+else:
+    SAVE_PATH = "best_model_voc20.pt"

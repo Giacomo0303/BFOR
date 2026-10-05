@@ -63,6 +63,8 @@ def train_epoch(
                 postfix["reg"] = f"{loss_dict['bbox_regression'].item():.3f}"
             if "bbox_ctrness" in loss_dict:
                 postfix["ctr"] = f"{loss_dict['bbox_ctrness'].item():.3f}"
+            if "bbox_objness" in loss_dict:
+                postfix["obj"] = f"{loss_dict['bbox_objness'].item():.3f}"
 
         pbar.set_postfix(postfix)
 

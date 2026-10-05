@@ -197,7 +197,7 @@ def evaluate_coco_official(
         ):
             img_id = test_set.dataset.ids[idx]
 
-            if model_type == "fcos":
+            if model_type in ["fcos", "bfor_fcos"]:
                 tensor_img, _, _ = test_set[idx]
                 x = [tensor_img.to(device)]
 
@@ -337,7 +337,7 @@ def compute_AR(
             test_set,
             desc=f"Evaluating ({'Canvas' if model_type == 'bfor' else 'FCOS Native'})",
         ):
-            if model_type == "fcos":
+            if model_type in ["fcos", "bfor_fcos"]:
                 tensor_img, target_dict, labels = item
                 gt_boxes = target_dict["boxes"].to(device)  # [N, 4] in xyxy native
                 if len(gt_boxes) == 0:
@@ -486,9 +486,9 @@ def main():
     parser.add_argument(
         "--model",
         type=str,
-        choices=["bfor", "fcos"],
+        choices=["bfor", "fcos", "bfor_fcos"],
         default=getattr(cfg, "MODEL_NAME", "bfor"),
-        help="Model architecture: 'bfor' or 'fcos' (default: cfg.MODEL_NAME).",
+        help="Model architecture: 'bfor', 'fcos', or 'bfor_fcos' (default: cfg.MODEL_NAME).",
     )
     parser.add_argument(
         "--dataset",
@@ -545,7 +545,14 @@ def main():
 
     checkpoint_path = args.checkpoint
     if checkpoint_path is None:
-        if args.model == "fcos":
+        if args.model == "bfor_fcos":
+            if os.path.exists("best_bfor_fcos_voc20.pt"):
+                checkpoint_path = "best_bfor_fcos_voc20.pt"
+            elif os.path.exists(cfg.SAVE_PATH):
+                checkpoint_path = cfg.SAVE_PATH
+            else:
+                checkpoint_path = "best_bfor_fcos_voc20.pt"
+        elif args.model == "fcos":
             if os.path.exists("best_fcos_voc20.pt"):
                 checkpoint_path = "best_fcos_voc20.pt"
             elif os.path.exists(cfg.SAVE_PATH):
@@ -599,7 +606,16 @@ def main():
             model_type=args.model,
         )
 
-    if args.model == "fcos":
+    if args.model == "bfor_fcos":
+        from src.fcos_model import build_bfor_fcos_model
+
+        model = build_bfor_fcos_model(
+            alpha=getattr(cfg, "ALPHA", 0.1),
+            pretrained_backbone=False,
+            score_thresh=0.0,
+            detections_per_img=1000,
+        ).to(device)
+    elif args.model == "fcos":
         from src.fcos_model import build_fcos_model
 
         model = build_fcos_model(

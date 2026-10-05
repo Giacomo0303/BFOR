@@ -58,6 +58,14 @@ def main():
             pretrained_backbone=getattr(cfg, "FCOS_PRETRAINED_BACKBONE", True),
         ).to(cfg.DEVICE)
         loss = None
+    elif model_name == "bfor_fcos":
+        from src.fcos_model import build_bfor_fcos_model
+
+        model = build_bfor_fcos_model(
+            alpha=getattr(cfg, "ALPHA", 0.1),
+            pretrained_backbone=getattr(cfg, "FCOS_PRETRAINED_BACKBONE", False),
+        ).to(cfg.DEVICE)
+        loss = None
     elif model_name == "bfor":
         model = BFOR_model(n_channels=cfg.N_CHANNELS, drop_rate=cfg.DROP_RATE).to(
             cfg.DEVICE
@@ -66,9 +74,13 @@ def main():
             alpha=cfg.ALPHA, lambda_ctr=cfg.LAMBDA_CTR, k=cfg.K, device=cfg.DEVICE
         )
     else:
-        raise ValueError(f"Unknown MODEL_NAME: '{model_name}'. Choose 'fcos' or 'bfor'.")
+        raise ValueError(
+            f"Unknown MODEL_NAME: '{model_name}'. Choose 'fcos', 'bfor_fcos', or 'bfor'."
+        )
 
-    opt_type = getattr(cfg, "OPTIMIZER", "sgd" if model_name == "fcos" else "adam").lower()
+    opt_type = getattr(
+        cfg, "OPTIMIZER", "sgd" if model_name == "fcos" else "adam"
+    ).lower()
     weight_decay = getattr(cfg, "WEIGHT_DECAY", 0.0)
     if opt_type == "sgd":
         optimizer = SGD(

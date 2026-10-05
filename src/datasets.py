@@ -9,10 +9,26 @@ from torchvision.datasets import CocoDetection, VOCDetection
 
 
 VOC_CLASSES = (
-    "aeroplane", "bicycle", "bird", "boat", "bottle",
-    "bus", "car", "cat", "chair", "cow",
-    "diningtable", "dog", "horse", "motorbike", "person",
-    "pottedplant", "sheep", "sofa", "train", "tvmonitor"
+    "aeroplane",
+    "bicycle",
+    "bird",
+    "boat",
+    "bottle",
+    "bus",
+    "car",
+    "cat",
+    "chair",
+    "cow",
+    "diningtable",
+    "dog",
+    "horse",
+    "motorbike",
+    "person",
+    "pottedplant",
+    "sheep",
+    "sofa",
+    "train",
+    "tvmonitor",
 )
 VOC_CLASS_TO_IDX = {name: i + 1 for i, name in enumerate(VOC_CLASSES)}
 
@@ -124,7 +140,7 @@ class PascalVOC(Dataset):
             bboxes = [bboxes]
 
         # Mode FCOS: native resolution, xyxy pixel boxes and integer class IDs
-        if self.model_type == "fcos":
+        if self.model_type in ["fcos", "bfor_fcos"]:
             tensor_img = F.to_tensor(img)
             fcos_boxes = []
             fcos_labels = []
@@ -343,7 +359,7 @@ class COCO2017(Dataset):
         ]
 
         # Mode FCOS: native resolution, xyxy pixel boxes and integer class IDs
-        if self.model_type == "fcos":
+        if self.model_type in ["fcos", "bfor_fcos"]:
             tensor_img = F.to_tensor(img)
             fcos_boxes = []
             fcos_labels = []
