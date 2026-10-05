@@ -1,19 +1,23 @@
 # Model & Dataset Selection
 MODEL_NAME = "fcos"  # "fcos" or "bfor"
-DATASET = "voc"      # "voc" or "coco"
+DATASET = "voc"  # "voc" or "coco"
 
 import os
 
 # Data
-DATA_PATH = "/mnt/external_ssd/Datasets" if os.path.exists("/mnt/external_ssd/Datasets") else "Data"
+DATA_PATH = (
+    "/mnt/external_ssd/Datasets"
+    if os.path.exists("/mnt/external_ssd/Datasets")
+    else "Data"
+)
 TRAIN_SIZE = 0.9
 BATCH_SIZE = 4
 NUM_WORKERS = 4
 SEED = 42
 
 # FCOS Specific Settings
-FCOS_PRETRAINED_BACKBONE = True  # ResNet-50 ImageNet-1K pretrained weights
-FCOS_NUM_CLASSES = 21            # 20 classes for VOC + 1 background
+FCOS_PRETRAINED_BACKBONE = False  # ResNet-50 ImageNet-1K pretrained weights
+FCOS_NUM_CLASSES = 21  # 20 classes for VOC + 1 background
 
 # B-FOR Specific Settings
 N_CHANNELS = 128

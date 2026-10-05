@@ -73,6 +73,9 @@ def validate(model, dataloader, loss_fn, device, epoch=None):
     if loss_fn is None:
         # Torchvision detection models compute loss only when model.training is True
         model.train()
+        for mod in model.modules():
+            if isinstance(mod, (torch.nn.BatchNorm2d, torch.nn.SyncBatchNorm)):
+                mod.eval()
     else:
         model.eval()
 
