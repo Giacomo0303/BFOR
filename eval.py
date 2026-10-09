@@ -197,7 +197,7 @@ def evaluate_coco_official(
         ):
             img_id = test_set.dataset.ids[idx]
 
-            if model_type in ["fcos", "bfor_fcos"]:
+            if model_type in ["fcos", "bfor_fcos", "centernet"]:
                 tensor_img, _, _ = test_set[idx]
                 x = [tensor_img.to(device)]
 
@@ -337,7 +337,7 @@ def compute_AR(
             test_set,
             desc=f"Evaluating ({'Canvas' if model_type == 'bfor' else 'FCOS Native'})",
         ):
-            if model_type in ["fcos", "bfor_fcos"]:
+            if model_type in ["fcos", "bfor_fcos", "centernet"]:
                 tensor_img, target_dict, labels = item
                 gt_boxes = target_dict["boxes"].to(device)  # [N, 4] in xyxy native
                 if len(gt_boxes) == 0:
@@ -486,9 +486,9 @@ def main():
     parser.add_argument(
         "--model",
         type=str,
-        choices=["bfor", "fcos", "bfor_fcos"],
+        choices=["bfor", "fcos", "bfor_fcos", "centernet"],
         default=getattr(cfg, "MODEL_NAME", "bfor"),
-        help="Model architecture: 'bfor', 'fcos', or 'bfor_fcos' (default: cfg.MODEL_NAME).",
+        help="Model architecture: 'bfor', 'fcos', 'bfor_fcos', or 'centernet' (default: cfg.MODEL_NAME).",
     )
     parser.add_argument(
         "--dataset",
@@ -559,6 +559,13 @@ def main():
                 checkpoint_path = cfg.SAVE_PATH
             else:
                 checkpoint_path = "best_fcos_voc20.pt"
+        elif args.model == "centernet":
+            if os.path.exists("best_centernet_voc20.pt"):
+                checkpoint_path = "best_centernet_voc20.pt"
+            elif os.path.exists(cfg.SAVE_PATH):
+                checkpoint_path = cfg.SAVE_PATH
+            else:
+                checkpoint_path = "best_centernet_voc20.pt"
         else:
             if os.path.exists(cfg.SAVE_PATH):
                 checkpoint_path = cfg.SAVE_PATH
@@ -623,6 +630,16 @@ def main():
             pretrained_backbone=False,
             score_thresh=0.0,
             detections_per_img=1000,
+        ).to(device)
+    elif args.model == "centernet":
+        from src.centernet_model import build_centernet_model
+
+        model = build_centernet_model(
+            num_classes=getattr(cfg, "CENTERNET_NUM_CLASSES", 20),
+            top_k=getattr(cfg, "CENTERNET_TOP_K", 70),
+            ae_threshold=getattr(cfg, "CENTERNET_AE_THRESH", 0.5),
+            score_thresh=0.0,
+            max_detections=1000,
         ).to(device)
     else:
         model = BFOR_model(n_channels=cfg.N_CHANNELS, drop_rate=cfg.DROP_RATE).to(device)

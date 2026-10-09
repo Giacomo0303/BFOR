@@ -139,8 +139,8 @@ class PascalVOC(Dataset):
         if not isinstance(bboxes, list):
             bboxes = [bboxes]
 
-        # Mode FCOS: native resolution, xyxy pixel boxes and integer class IDs
-        if self.model_type in ["fcos", "bfor_fcos"]:
+        # Mode FCOS / CenterNet: native resolution, xyxy pixel boxes and integer class IDs
+        if self.model_type in ["fcos", "bfor_fcos", "centernet"]:
             tensor_img = F.to_tensor(img)
             fcos_boxes = []
             fcos_labels = []
@@ -358,8 +358,8 @@ class COCO2017(Dataset):
             if tgt["iscrowd"] == 0
         ]
 
-        # Mode FCOS: native resolution, xyxy pixel boxes and integer class IDs
-        if self.model_type in ["fcos", "bfor_fcos"]:
+        # Mode FCOS / CenterNet: native resolution, xyxy pixel boxes and integer class IDs
+        if self.model_type in ["fcos", "bfor_fcos", "centernet"]:
             tensor_img = F.to_tensor(img)
             fcos_boxes = []
             fcos_labels = []

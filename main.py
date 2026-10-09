@@ -66,6 +66,15 @@ def main():
             pretrained_backbone=getattr(cfg, "FCOS_PRETRAINED_BACKBONE", False),
         ).to(cfg.DEVICE)
         loss = None
+    elif model_name == "centernet":
+        from src.centernet_model import build_centernet_model
+
+        model = build_centernet_model(
+            num_classes=getattr(cfg, "CENTERNET_NUM_CLASSES", 20),
+            top_k=getattr(cfg, "CENTERNET_TOP_K", 70),
+            ae_threshold=getattr(cfg, "CENTERNET_AE_THRESH", 0.5),
+        ).to(cfg.DEVICE)
+        loss = None
     elif model_name == "bfor":
         model = BFOR_model(n_channels=cfg.N_CHANNELS, drop_rate=cfg.DROP_RATE).to(
             cfg.DEVICE
@@ -75,7 +84,7 @@ def main():
         )
     else:
         raise ValueError(
-            f"Unknown MODEL_NAME: '{model_name}'. Choose 'fcos', 'bfor_fcos', or 'bfor'."
+            f"Unknown MODEL_NAME: '{model_name}'. Choose 'centernet', 'fcos', 'bfor_fcos', or 'bfor'."
         )
 
     opt_type = getattr(

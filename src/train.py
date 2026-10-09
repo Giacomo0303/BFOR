@@ -65,6 +65,14 @@ def train_epoch(
                 postfix["ctr"] = f"{loss_dict['bbox_ctrness'].item():.3f}"
             if "bbox_objness" in loss_dict:
                 postfix["obj"] = f"{loss_dict['bbox_objness'].item():.3f}"
+            if "loss_focal" in loss_dict:
+                postfix["foc"] = f"{loss_dict['loss_focal'].item():.3f}"
+            if "loss_pull" in loss_dict:
+                postfix["pull"] = f"{loss_dict['loss_pull'].item():.3f}"
+            if "loss_push" in loss_dict:
+                postfix["push"] = f"{loss_dict['loss_push'].item():.3f}"
+            if "loss_regr" in loss_dict:
+                postfix["reg"] = f"{loss_dict['loss_regr'].item():.3f}"
 
         pbar.set_postfix(postfix)
 

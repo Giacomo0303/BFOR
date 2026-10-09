@@ -1,5 +1,5 @@
 # Model & Dataset Selection
-MODEL_NAME = "bfor_fcos"  # "fcos" or "bfor"
+MODEL_NAME = "centernet"  # "fcos", "bfor_fcos", "bfor", or "centernet"
 DATASET = "voc"  # "voc" or "coco"
 
 import os
@@ -19,6 +19,11 @@ SEED = 42
 FCOS_PRETRAINED_BACKBONE = True  # ResNet-50 ImageNet-1K pretrained weights
 FCOS_NUM_CLASSES = 21  # 20 classes for VOC + 1 background
 
+# CenterNet Specific Settings
+CENTERNET_NUM_CLASSES = 20  # 20 foreground classes for VOC (no explicit background class)
+CENTERNET_TOP_K = 70
+CENTERNET_AE_THRESH = 0.5
+
 # B-FOR Specific Settings
 N_CHANNELS = 128
 DROP_RATE = 0.2
@@ -30,7 +35,7 @@ ALL_CLASSES = True
 # Training
 EPOCHS = 100
 OPTIMIZER = "sgd" if MODEL_NAME in ["fcos", "bfor_fcos"] else "adam"
-LR = 0.001 if MODEL_NAME in ["fcos", "bfor_fcos"] else 1e-4
+LR = 2.5e-4 if MODEL_NAME == "centernet" else (0.001 if MODEL_NAME in ["fcos", "bfor_fcos"] else 1e-4)
 MOMENTUM = 0.9
 WEIGHT_DECAY = 1e-4 if MODEL_NAME in ["fcos", "bfor_fcos"] else 0.0
 LR_PATIENCE = 5
@@ -44,5 +49,7 @@ if MODEL_NAME == "fcos":
     SAVE_PATH = "best_fcos_voc20.pt"
 elif MODEL_NAME == "bfor_fcos":
     SAVE_PATH = "best_bfor_fcos_voc20.pt"
+elif MODEL_NAME == "centernet":
+    SAVE_PATH = "best_centernet_voc20.pt"
 else:
     SAVE_PATH = "best_model_voc20.pt"
