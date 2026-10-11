@@ -342,15 +342,15 @@ def _neg_loss(preds: List[Tensor], gt: Tensor) -> Tensor:
     pos_inds = gt.eq(1)
     neg_inds = gt.lt(1)
 
-    neg_weights = torch.pow(1 - gt[neg_inds], 4)
+    neg_weights = torch.pow(1.0 - gt[neg_inds], 4)
 
     loss = torch.tensor(0.0, device=gt.device, dtype=gt.dtype)
     for pred in preds:
-        pos_pred = pred[pos_inds]
-        neg_pred = pred[neg_inds]
+        pos_pred = pred[pos_inds].clamp(min=1e-6, max=1.0 - 1e-6)
+        neg_pred = pred[neg_inds].clamp(min=1e-6, max=1.0 - 1e-6)
 
-        pos_loss = torch.log(pos_pred) * torch.pow(1 - pos_pred, 2)
-        neg_loss = torch.log(1 - neg_pred) * torch.pow(neg_pred, 2) * neg_weights
+        pos_loss = torch.log(pos_pred) * torch.pow(1.0 - pos_pred, 2)
+        neg_loss = torch.log((1.0 - neg_pred).clamp(min=1e-6)) * torch.pow(neg_pred, 2) * neg_weights
 
         num_pos = pos_inds.float().sum()
         pos_loss = pos_loss.sum()
@@ -446,6 +446,23 @@ class CenterNetLoss(nn.Module):
         gt_br_regr: Tensor,
         gt_ct_regr: Tensor,
     ) -> Dict[str, Tensor]:
+        # Cast predicted and ground-truth tensors to float32 for numerical stability (prevents fp16 log underflow)
+        tl_heat = tl_heat.float()
+        br_heat = br_heat.float()
+        ct_heat = ct_heat.float()
+        tl_tag = tl_tag.float()
+        br_tag = br_tag.float()
+        tl_regr = tl_regr.float()
+        br_regr = br_regr.float()
+        ct_regr = ct_regr.float()
+
+        gt_tl_heat = gt_tl_heat.float()
+        gt_br_heat = gt_br_heat.float()
+        gt_ct_heat = gt_ct_heat.float()
+        gt_tl_regr = gt_tl_regr.float()
+        gt_br_regr = gt_br_regr.float()
+        gt_ct_regr = gt_ct_regr.float()
+
         # Gather predicted tags and regrs at ground truth keypoint positions
         tl_tag_g = _tranpose_and_gather_feat(tl_tag, tl_inds)
         br_tag_g = _tranpose_and_gather_feat(br_tag, br_inds)
@@ -454,10 +471,10 @@ class CenterNetLoss(nn.Module):
         br_regr_g = _tranpose_and_gather_feat(br_regr, br_inds)
         ct_regr_g = _tranpose_and_gather_feat(ct_regr, ct_inds)
 
-        # Clamped sigmoids for focal loss stability
-        tl_heat_sig = torch.sigmoid(tl_heat).clamp(min=1e-4, max=1.0 - 1e-4)
-        br_heat_sig = torch.sigmoid(br_heat).clamp(min=1e-4, max=1.0 - 1e-4)
-        ct_heat_sig = torch.sigmoid(ct_heat).clamp(min=1e-4, max=1.0 - 1e-4)
+        # Clamped sigmoids for focal loss stability in float32
+        tl_heat_sig = torch.sigmoid(tl_heat).clamp(min=1e-6, max=1.0 - 1e-6)
+        br_heat_sig = torch.sigmoid(br_heat).clamp(min=1e-6, max=1.0 - 1e-6)
+        ct_heat_sig = torch.sigmoid(ct_heat).clamp(min=1e-6, max=1.0 - 1e-6)
 
         # 1. Focal loss
         focal_tl = _neg_loss([tl_heat_sig], gt_tl_heat)

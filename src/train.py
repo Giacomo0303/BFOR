@@ -35,6 +35,11 @@ def train_epoch(
                 out = model(x)
             batch_loss = loss_fn(out, y)
 
+        if not torch.isfinite(batch_loss):
+            print(f"[Warning] Non-finite loss encountered at batch {batch_idx}: {batch_loss.item()}. Skipping update.")
+            optimizer.zero_grad()
+            continue
+
         if isinstance(batch_loss, torch.Tensor) and batch_loss.requires_grad:
             scaler.scale(batch_loss).backward()
             if max_grad_norm is not None and max_grad_norm > 0:
@@ -112,6 +117,9 @@ def validate(model, dataloader, loss_fn, device, epoch=None):
                 with torch.amp.autocast(device_type=device_type, dtype=torch.float16):
                     out = model(x)
                 batch_loss = loss_fn(out, y)
+
+            if not torch.isfinite(batch_loss):
+                continue
 
             loss_val = (
                 batch_loss.item()
