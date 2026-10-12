@@ -20,7 +20,8 @@ FCOS_PRETRAINED_BACKBONE = True  # ResNet-50 ImageNet-1K pretrained weights
 FCOS_NUM_CLASSES = 21  # 20 classes for VOC + 1 background
 
 # CenterNet Specific Settings
-CENTERNET_NUM_CLASSES = 20  # 20 foreground classes for VOC (no explicit background class)
+CENTERNET_CLASS_AGNOSTIC = True  # True: 1 generic objectness class, False: multi-class VOC (20 classes)
+CENTERNET_AE_DIM = 4  # Dimension of Associative Embedding (default: 4 for class-agnostic, 1 for multi-class)
 CENTERNET_TOP_K = 70
 CENTERNET_AE_THRESH = 0.5
 CENTERNET_DATA_AUG = True  # Enable official CenterNet augmentation during training
@@ -51,6 +52,6 @@ if MODEL_NAME == "fcos":
 elif MODEL_NAME == "bfor_fcos":
     SAVE_PATH = "best_bfor_fcos_voc20.pt"
 elif MODEL_NAME == "centernet":
-    SAVE_PATH = "best_centernet_voc20.pt"
+    SAVE_PATH = "best_centernet_voc_class_agnostic.pt" if CENTERNET_CLASS_AGNOSTIC else "best_centernet_voc20.pt"
 else:
     SAVE_PATH = "best_model_voc20.pt"

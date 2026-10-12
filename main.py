@@ -70,7 +70,8 @@ def main():
         from src.centernet_model import build_centernet_model
 
         model = build_centernet_model(
-            num_classes=getattr(cfg, "CENTERNET_NUM_CLASSES", 20),
+            class_agnostic=getattr(cfg, "CENTERNET_CLASS_AGNOSTIC", False),
+            ae_dim=getattr(cfg, "CENTERNET_AE_DIM", 4 if getattr(cfg, "CENTERNET_CLASS_AGNOSTIC", False) else 1),
             top_k=getattr(cfg, "CENTERNET_TOP_K", 70),
             ae_threshold=getattr(cfg, "CENTERNET_AE_THRESH", 0.5),
         ).to(cfg.DEVICE)

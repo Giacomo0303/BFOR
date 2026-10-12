@@ -560,12 +560,20 @@ def main():
             else:
                 checkpoint_path = "best_fcos_voc20.pt"
         elif args.model == "centernet":
-            if os.path.exists("best_centernet_voc20.pt"):
-                checkpoint_path = "best_centernet_voc20.pt"
-            elif os.path.exists(cfg.SAVE_PATH):
+            is_class_agnostic = getattr(cfg, "CENTERNET_CLASS_AGNOSTIC", False)
+            default_ckpt = (
+                "best_centernet_voc_class_agnostic.pt"
+                if is_class_agnostic
+                else "best_centernet_voc20.pt"
+            )
+            if os.path.exists(cfg.SAVE_PATH):
                 checkpoint_path = cfg.SAVE_PATH
-            else:
+            elif os.path.exists(default_ckpt):
+                checkpoint_path = default_ckpt
+            elif os.path.exists("best_centernet_voc20.pt"):
                 checkpoint_path = "best_centernet_voc20.pt"
+            else:
+                checkpoint_path = default_ckpt
         else:
             if os.path.exists(cfg.SAVE_PATH):
                 checkpoint_path = cfg.SAVE_PATH
@@ -635,7 +643,8 @@ def main():
         from src.centernet_model import build_centernet_model
 
         model = build_centernet_model(
-            num_classes=getattr(cfg, "CENTERNET_NUM_CLASSES", 20),
+            class_agnostic=getattr(cfg, "CENTERNET_CLASS_AGNOSTIC", False),
+            ae_dim=getattr(cfg, "CENTERNET_AE_DIM", 4 if getattr(cfg, "CENTERNET_CLASS_AGNOSTIC", False) else 1),
             top_k=getattr(cfg, "CENTERNET_TOP_K", 70),
             ae_threshold=getattr(cfg, "CENTERNET_AE_THRESH", 0.5),
             score_thresh=0.0,

@@ -265,9 +265,10 @@ class CenterNet52Backbone(nn.Module):
     1-stack Hourglass-52 CenterNet backbone with Cascade Corner Pooling
     and Center Pooling heads (Duan et al., ICCV 2019).
     """
-    def __init__(self, num_classes: int = 20):
+    def __init__(self, num_classes: int = 20, ae_dim: int = 1):
         super().__init__()
         self.num_classes = num_classes
+        self.ae_dim = ae_dim
         n = 5
         dims = [256, 256, 384, 384, 384, 512]
         modules = [2, 2, 2, 2, 2, 4]
@@ -299,9 +300,9 @@ class CenterNet52Backbone(nn.Module):
             br_heat[-1].bias.data.fill_(-2.19)
             ct_heat[-1].bias.data.fill_(-2.19)
 
-        # Associative Embedding tags (1D)
-        self.tl_tags = nn.ModuleList([make_kp_layer(cnv_dim, curr_dim, 1)])
-        self.br_tags = nn.ModuleList([make_kp_layer(cnv_dim, curr_dim, 1)])
+        # Associative Embedding tags (ae_dim channels: 1D for multi-class or D-dim for class-agnostic)
+        self.tl_tags = nn.ModuleList([make_kp_layer(cnv_dim, curr_dim, ae_dim)])
+        self.br_tags = nn.ModuleList([make_kp_layer(cnv_dim, curr_dim, ae_dim)])
 
         # Sub-pixel offsets (2D)
         self.tl_regrs = nn.ModuleList([make_kp_layer(cnv_dim, curr_dim, 2)])
@@ -364,25 +365,31 @@ def _neg_loss(preds: List[Tensor], gt: Tensor) -> Tensor:
 
 
 def _ae_loss(tag0: Tensor, tag1: Tensor, mask: Tensor) -> Tuple[Tensor, Tensor]:
-    """Associative Embedding Push/Pull Loss (CornerNet Eq. 4-5)."""
-    num = mask.sum(dim=1, keepdim=True).float()
-    tag0 = tag0.squeeze(-1)
-    tag1 = tag1.squeeze(-1)
+    """
+    Associative Embedding Push/Pull Loss (CornerNet Eq. 4-5 / Newell et al. NeurIPS 2017).
+    Supports arbitrary embedding dimension D (1D scalar or D-dimensional vectors).
+    """
+    if tag0.dim() == 2:
+        tag0 = tag0.unsqueeze(-1)
+    if tag1.dim() == 2:
+        tag1 = tag1.unsqueeze(-1)
 
-    tag_mean = (tag0 + tag1) / 2
+    num = mask.sum(dim=1, keepdim=True).float()  # [B, 1]
+    tag_mean = (tag0 + tag1) / 2.0  # [B, N, D]
 
-    tag0_diff = torch.pow(tag0 - tag_mean, 2) / (num + 1e-4)
+    tag0_diff = torch.sum(torch.pow(tag0 - tag_mean, 2), dim=-1) / (num + 1e-4)  # [B, N]
     tag0_sum = tag0_diff[mask].sum()
-    tag1_diff = torch.pow(tag1 - tag_mean, 2) / (num + 1e-4)
+    tag1_diff = torch.sum(torch.pow(tag1 - tag_mean, 2), dim=-1) / (num + 1e-4)  # [B, N]
     tag1_sum = tag1_diff[mask].sum()
     pull = tag0_sum + tag1_sum
 
-    mask_pair = mask.unsqueeze(1) & mask.unsqueeze(2)
-    num_exp = num.unsqueeze(2)
+    mask_pair = mask.unsqueeze(1) & mask.unsqueeze(2)  # [B, N, N]
+    num_exp = num.unsqueeze(2)  # [B, 1, 1]
     num2 = (num_exp - 1) * num_exp
 
-    dist = tag_mean.unsqueeze(1) - tag_mean.unsqueeze(2)
-    dist = 1.0 - torch.abs(dist)
+    diff = tag_mean.unsqueeze(1) - tag_mean.unsqueeze(2)  # [B, N, N, D]
+    dist_l2 = torch.linalg.vector_norm(diff, dim=-1)  # [B, N, N]
+    dist = 1.0 - dist_l2
     dist = F.relu(dist, inplace=False)
     dist = dist - 1.0 / (num_exp + 1e-4)
     dist = dist / (num2 + 1e-4)
@@ -629,10 +636,10 @@ def decode_centernet(
 
     bboxes = torch.stack((tl_xs, tl_ys, br_xs, br_ys), dim=3)
 
-    # Corner associative embedding distance
-    tl_tag_g = _tranpose_and_gather_feat(tl_tag, tl_inds).view(batch, K, 1)
-    br_tag_g = _tranpose_and_gather_feat(br_tag, br_inds).view(batch, 1, K)
-    dists = torch.abs(tl_tag_g - br_tag_g)
+    # Corner associative embedding distance (supports arbitrary D-dimensional tags)
+    tl_tag_g = _tranpose_and_gather_feat(tl_tag, tl_inds).view(batch, K, 1, -1)
+    br_tag_g = _tranpose_and_gather_feat(br_tag, br_inds).view(batch, 1, K, -1)
+    dists = torch.linalg.vector_norm(tl_tag_g - br_tag_g, dim=-1)
 
     tl_scores_exp = tl_scores.view(batch, K, 1).expand(batch, K, K)
     br_scores_exp = br_scores.view(batch, 1, K).expand(batch, K, K)
@@ -785,6 +792,8 @@ class CenterNetDetector(nn.Module):
     def __init__(
         self,
         num_classes: int = 20,
+        class_agnostic: bool = False,
+        ae_dim: Optional[int] = None,
         input_size: Tuple[int, int] = (512, 512),
         top_k: int = 70,
         ae_threshold: float = 0.5,
@@ -794,7 +803,14 @@ class CenterNetDetector(nn.Module):
         score_thresh: float = 0.05,
     ):
         super().__init__()
-        self.num_classes = num_classes
+        self.class_agnostic = class_agnostic
+        if self.class_agnostic:
+            self.num_classes = 1
+            self.ae_dim = 4 if ae_dim is None else ae_dim
+        else:
+            self.num_classes = num_classes
+            self.ae_dim = 1 if ae_dim is None else ae_dim
+
         self.input_size = input_size  # (H, W) = (512, 512)
         self.output_size = (input_size[0] // 4, input_size[1] // 4)  # (128, 128)
         self.stride = 4
@@ -807,7 +823,7 @@ class CenterNetDetector(nn.Module):
         self.score_thresh = score_thresh
 
         # Model backbone and heads
-        self.net = CenterNet52Backbone(num_classes=num_classes)
+        self.net = CenterNet52Backbone(num_classes=self.num_classes, ae_dim=self.ae_dim)
         self.loss_fn = CenterNetLoss(pull_weight=0.1, push_weight=0.1, regr_weight=1.0)
 
         # CenterNet RGB image normalization buffers (converted from official BGR values)
@@ -891,10 +907,13 @@ class CenterNetDetector(nn.Module):
             for k in range(num_boxes):
                 x1, y1, x2, y2 = boxes[k].tolist()
                 lbl = int(labels[k].item())
-                # Labels are 1..20; map to category 0..19
-                cat = lbl - 1 if lbl > 0 else 0
-                if cat < 0 or cat >= C:
-                    continue
+                # In class-agnostic mode, all objects map to category 0 (single objectness channel)
+                if self.class_agnostic or C == 1:
+                    cat = 0
+                else:
+                    cat = lbl - 1 if lbl > 0 else 0
+                    if cat < 0 or cat >= C:
+                        continue
 
                 # Transform to 512x512 padded canvas
                 x1 = x1 * scale + px
@@ -1133,6 +1152,8 @@ class CenterNetDetector(nn.Module):
 
 def build_centernet_model(
     num_classes: int = 20,
+    class_agnostic: Optional[bool] = None,
+    ae_dim: Optional[int] = None,
     pretrained: bool = False,
     input_size: Tuple[int, int] = (512, 512),
     **kwargs,
@@ -1141,8 +1162,22 @@ def build_centernet_model(
     Factory function for CenterNet Keypoint Triplets model with Hourglass-52 backbone.
     Hourglass-52 is trained from scratch as per Duan et al. (2019) and Newell et al. (2016).
     """
+    try:
+        import run_config as cfg
+        if class_agnostic is None:
+            class_agnostic = getattr(cfg, "CENTERNET_CLASS_AGNOSTIC", False)
+        if ae_dim is None:
+            ae_dim = getattr(cfg, "CENTERNET_AE_DIM", 4 if class_agnostic else 1)
+    except Exception:
+        if class_agnostic is None:
+            class_agnostic = False
+        if ae_dim is None:
+            ae_dim = 4 if class_agnostic else 1
+
     model = CenterNetDetector(
         num_classes=num_classes,
+        class_agnostic=class_agnostic,
+        ae_dim=ae_dim,
         input_size=input_size,
         **kwargs,
     )
