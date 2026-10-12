@@ -23,6 +23,7 @@ FCOS_NUM_CLASSES = 21  # 20 classes for VOC + 1 background
 CENTERNET_NUM_CLASSES = 20  # 20 foreground classes for VOC (no explicit background class)
 CENTERNET_TOP_K = 70
 CENTERNET_AE_THRESH = 0.5
+CENTERNET_DATA_AUG = True  # Enable official CenterNet augmentation during training
 
 # B-FOR Specific Settings
 N_CHANNELS = 128
