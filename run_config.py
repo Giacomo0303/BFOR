@@ -24,7 +24,7 @@ CENTERNET_CLASS_AGNOSTIC = True  # True: 1 generic objectness class, False: mult
 CENTERNET_AE_DIM = 4  # Dimension of Associative Embedding (default: 4 for class-agnostic, 1 for multi-class)
 CENTERNET_TOP_K = 70
 CENTERNET_AE_THRESH = 0.5
-CENTERNET_DATA_AUG = True  # Enable official CenterNet augmentation during training
+CENTERNET_DATA_AUG = False  # Enable official CenterNet augmentation during training
 
 # B-FOR Specific Settings
 N_CHANNELS = 128
