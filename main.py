@@ -66,6 +66,17 @@ def main():
             pretrained_backbone=getattr(cfg, "FCOS_PRETRAINED_BACKBONE", False),
         ).to(cfg.DEVICE)
         loss = None
+    elif model_name == "centernet_bfor":
+        from src.centernet_bfor import build_centernet_bfor_model
+
+        model = build_centernet_bfor_model(
+            alpha=getattr(cfg, "ALPHA", 0.1),
+            lambda_ctr=getattr(cfg, "LAMBDA_CTR", 1.0),
+            ae_dim=getattr(cfg, "CENTERNET_AE_DIM", 4),
+            top_k=getattr(cfg, "CENTERNET_TOP_K", 70),
+            ae_threshold=getattr(cfg, "CENTERNET_AE_THRESH", 0.5),
+        ).to(cfg.DEVICE)
+        loss = None
     elif model_name == "centernet":
         from src.centernet_model import build_centernet_model
 
@@ -85,7 +96,7 @@ def main():
         )
     else:
         raise ValueError(
-            f"Unknown MODEL_NAME: '{model_name}'. Choose 'centernet', 'fcos', 'bfor_fcos', or 'bfor'."
+            f"Unknown MODEL_NAME: '{model_name}'. Choose 'centernet', 'centernet_bfor', 'fcos', 'bfor_fcos', or 'bfor'."
         )
 
     opt_type = getattr(

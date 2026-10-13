@@ -72,6 +72,10 @@ def train_epoch(
                 postfix["obj"] = f"{loss_dict['bbox_objness'].item():.3f}"
             if "loss_focal" in loss_dict:
                 postfix["foc"] = f"{loss_dict['loss_focal'].item():.3f}"
+            if "loss_bfor_ros" in loss_dict:
+                postfix["ros"] = f"{loss_dict['loss_bfor_ros'].item():.3f}"
+            if "loss_bfor_ctr" in loss_dict:
+                postfix["ctr"] = f"{loss_dict['loss_bfor_ctr'].item():.3f}"
             if "loss_pull" in loss_dict:
                 postfix["pull"] = f"{loss_dict['loss_pull'].item():.3f}"
             if "loss_push" in loss_dict:

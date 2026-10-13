@@ -164,7 +164,7 @@ class PascalVOC(Dataset):
             bboxes = [bboxes]
 
         # Mode FCOS / CenterNet: native resolution, xyxy pixel boxes and integer class IDs
-        if self.model_type in ["fcos", "bfor_fcos", "centernet"]:
+        if self.model_type in ["fcos", "bfor_fcos", "centernet", "centernet_bfor"]:
             fcos_boxes = []
             fcos_labels = []
             for box in bboxes:
@@ -182,7 +182,7 @@ class PascalVOC(Dataset):
                         labels.append(box["name"])
 
             # Data augmentation strictly for CenterNet training split
-            if self.model_type == "centernet" and self.split == "train":
+            if self.model_type in ["centernet", "centernet_bfor"] and self.split == "train":
                 try:
                     import run_config as cfg
                     apply_aug = getattr(cfg, "CENTERNET_DATA_AUG", True)
@@ -414,7 +414,7 @@ class COCO2017(Dataset):
         ]
 
         # Mode FCOS / CenterNet: native resolution, xyxy pixel boxes and integer class IDs
-        if self.model_type in ["fcos", "bfor_fcos", "centernet"]:
+        if self.model_type in ["fcos", "bfor_fcos", "centernet", "centernet_bfor"]:
             fcos_boxes = []
             fcos_labels = []
             labels = []
@@ -432,7 +432,7 @@ class COCO2017(Dataset):
                         labels.append(cat_name)
 
             # Data augmentation strictly for CenterNet training split
-            if self.model_type == "centernet" and self.split == "train":
+            if self.model_type in ["centernet", "centernet_bfor"] and self.split == "train":
                 try:
                     import run_config as cfg
                     apply_aug = getattr(cfg, "CENTERNET_DATA_AUG", True)

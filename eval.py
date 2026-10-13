@@ -198,7 +198,7 @@ def evaluate_coco_official(
         ):
             img_id = test_set.dataset.ids[idx]
 
-            if model_type in ["fcos", "bfor_fcos", "centernet"]:
+            if model_type in ["fcos", "bfor_fcos", "centernet", "centernet_bfor"]:
                 tensor_img, _, _ = test_set[idx]
                 x = [tensor_img.to(device)]
 
@@ -339,7 +339,7 @@ def compute_AR(
             desc=f"Evaluating ({'Canvas' if model_type == 'bfor' else 'FCOS Native'})",
             dynamic_ncols=True,
         ):
-            if model_type in ["fcos", "bfor_fcos", "centernet"]:
+            if model_type in ["fcos", "bfor_fcos", "centernet", "centernet_bfor"]:
                 tensor_img, target_dict, labels = item
                 gt_boxes = target_dict["boxes"].to(device)  # [N, 4] in xyxy native
                 if len(gt_boxes) == 0:
@@ -488,9 +488,9 @@ def main():
     parser.add_argument(
         "--model",
         type=str,
-        choices=["bfor", "fcos", "bfor_fcos", "centernet"],
+        choices=["bfor", "fcos", "bfor_fcos", "centernet", "centernet_bfor"],
         default=getattr(cfg, "MODEL_NAME", "bfor"),
-        help="Model architecture: 'bfor', 'fcos', 'bfor_fcos', or 'centernet' (default: cfg.MODEL_NAME).",
+        help="Model architecture: 'bfor', 'fcos', 'bfor_fcos', 'centernet', or 'centernet_bfor' (default: cfg.MODEL_NAME).",
     )
     parser.add_argument(
         "--dataset",
@@ -561,6 +561,14 @@ def main():
                 checkpoint_path = cfg.SAVE_PATH
             else:
                 checkpoint_path = "best_fcos_voc20.pt"
+        elif args.model == "centernet_bfor":
+            default_ckpt = "best_centernet_bfor_voc_class_agnostic.pt"
+            if os.path.exists(cfg.SAVE_PATH):
+                checkpoint_path = cfg.SAVE_PATH
+            elif os.path.exists(default_ckpt):
+                checkpoint_path = default_ckpt
+            else:
+                checkpoint_path = default_ckpt
         elif args.model == "centernet":
             is_class_agnostic = getattr(cfg, "CENTERNET_CLASS_AGNOSTIC", False)
             default_ckpt = (
@@ -640,6 +648,18 @@ def main():
             pretrained_backbone=False,
             score_thresh=0.0,
             detections_per_img=1000,
+        ).to(device)
+    elif args.model == "centernet_bfor":
+        from src.centernet_bfor import build_centernet_bfor_model
+
+        model = build_centernet_bfor_model(
+            alpha=getattr(cfg, "ALPHA", 0.1),
+            lambda_ctr=getattr(cfg, "LAMBDA_CTR", 1.0),
+            ae_dim=getattr(cfg, "CENTERNET_AE_DIM", 4),
+            top_k=getattr(cfg, "CENTERNET_TOP_K", 70),
+            ae_threshold=getattr(cfg, "CENTERNET_AE_THRESH", 0.5),
+            score_thresh=0.0,
+            max_detections=1000,
         ).to(device)
     elif args.model == "centernet":
         from src.centernet_model import build_centernet_model

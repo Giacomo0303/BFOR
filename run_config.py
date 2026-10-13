@@ -1,5 +1,7 @@
 # Model & Dataset Selection
-MODEL_NAME = "centernet"  # "fcos", "bfor_fcos", "bfor", or "centernet"
+MODEL_NAME = (
+    "centernet_bfor"  # "fcos", "bfor_fcos", "bfor", "centernet", or "centernet_bfor"
+)
 DATASET = "voc"  # "voc" or "coco"
 
 import os
@@ -41,7 +43,7 @@ EPOCHS = 100
 OPTIMIZER = "sgd" if MODEL_NAME in ["fcos", "bfor_fcos"] else "adam"
 LR = (
     2.5e-4
-    if MODEL_NAME == "centernet"
+    if MODEL_NAME in ["centernet", "centernet_bfor"]
     else (0.001 if MODEL_NAME in ["fcos", "bfor_fcos"] else 1e-4)
 )
 MOMENTUM = 0.9
@@ -57,6 +59,8 @@ if MODEL_NAME == "fcos":
     SAVE_PATH = "best_fcos_voc20.pt"
 elif MODEL_NAME == "bfor_fcos":
     SAVE_PATH = "best_bfor_fcos_voc20.pt"
+elif MODEL_NAME == "centernet_bfor":
+    SAVE_PATH = "best_centernet_bfor_voc_class_agnostic.pt"
 elif MODEL_NAME == "centernet":
     SAVE_PATH = (
         "best_centernet_voc_class_agnostic_aug.pt"
