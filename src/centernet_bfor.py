@@ -225,61 +225,63 @@ class CenterNetBFORLoss(nn.Module):
         gt_ct_regr: Tensor,
         gt_boxes_fmap: List[Tensor],
     ) -> Dict[str, Tensor]:
-        tl_heat = tl_heat.float()
-        br_heat = br_heat.float()
-        ct_heat = ct_heat.float()
-        tl_tag = tl_tag.float()
-        br_tag = br_tag.float()
-        tl_regr = tl_regr.float()
-        br_regr = br_regr.float()
-        ct_regr = ct_regr.float()
+        device_type = tl_heat.device.type
+        with torch.amp.autocast(device_type=device_type, enabled=False):
+            tl_heat = tl_heat.float()
+            br_heat = br_heat.float()
+            ct_heat = ct_heat.float()
+            tl_tag = tl_tag.float()
+            br_tag = br_tag.float()
+            tl_regr = tl_regr.float()
+            br_regr = br_regr.float()
+            ct_regr = ct_regr.float()
 
-        gt_tl_heat = gt_tl_heat.float()
-        gt_br_heat = gt_br_heat.float()
-        gt_tl_regr = gt_tl_regr.float()
-        gt_br_regr = gt_br_regr.float()
-        gt_ct_regr = gt_ct_regr.float()
+            gt_tl_heat = gt_tl_heat.float()
+            gt_br_heat = gt_br_heat.float()
+            gt_tl_regr = gt_tl_regr.float()
+            gt_br_regr = gt_br_regr.float()
+            gt_ct_regr = gt_ct_regr.float()
 
-        # Gather predicted tags and regrs at ground truth keypoint positions
-        tl_tag_g = _tranpose_and_gather_feat(tl_tag, tl_inds)
-        br_tag_g = _tranpose_and_gather_feat(br_tag, br_inds)
+            # Gather predicted tags and regrs at ground truth keypoint positions
+            tl_tag_g = _tranpose_and_gather_feat(tl_tag, tl_inds)
+            br_tag_g = _tranpose_and_gather_feat(br_tag, br_inds)
 
-        tl_regr_g = _tranpose_and_gather_feat(tl_regr, tl_inds)
-        br_regr_g = _tranpose_and_gather_feat(br_regr, br_inds)
-        ct_regr_g = _tranpose_and_gather_feat(ct_regr, ct_inds)
+            tl_regr_g = _tranpose_and_gather_feat(tl_regr, tl_inds)
+            br_regr_g = _tranpose_and_gather_feat(br_regr, br_inds)
+            ct_regr_g = _tranpose_and_gather_feat(ct_regr, ct_inds)
 
-        # 1. Masked Focal Loss on Corners (strictly inside bbox quadrants, zero bg gradient)
-        focal_tl = _masked_neg_loss(tl_heat, gt_tl_heat, tl_mask)
-        focal_br = _masked_neg_loss(br_heat, gt_br_heat, br_mask)
-        corner_loss = focal_tl + focal_br
+            # 1. Masked Focal Loss on Corners (strictly inside bbox quadrants, zero bg gradient)
+            focal_tl = _masked_neg_loss(tl_heat, gt_tl_heat, tl_mask)
+            focal_br = _masked_neg_loss(br_heat, gt_br_heat, br_mask)
+            corner_loss = focal_tl + focal_br
 
-        # 2. Pure B-FOR Center Loss (strictly on bbox crops, zero bg gradient)
-        ros_loss, ctr_loss = _bfor_center_loss(
-            ct_heat, gt_boxes_fmap, alpha=self.alpha, lambda_ctr=self.lambda_ctr
-        )
-        center_loss = ros_loss + self.lambda_ctr * ctr_loss
+            # 2. Pure B-FOR Center Loss (strictly on bbox crops, zero bg gradient)
+            ros_loss, ctr_loss = _bfor_center_loss(
+                ct_heat, gt_boxes_fmap, alpha=self.alpha, lambda_ctr=self.lambda_ctr
+            )
+            center_loss = ros_loss + self.lambda_ctr * ctr_loss
 
-        # 3. Associative Embedding push/pull loss (4D AE)
-        pull, push = _ae_loss(tl_tag_g, br_tag_g, gt_mask)
-        pull_loss = self.pull_weight * pull
-        push_loss = self.push_weight * push
+            # 3. Associative Embedding push/pull loss (4D AE)
+            pull, push = _ae_loss(tl_tag_g, br_tag_g, gt_mask)
+            pull_loss = self.pull_weight * pull
+            push_loss = self.push_weight * push
 
-        # 4. Offset regression loss (Corners + Center sub-pixel refinement)
-        regr_tl = _regr_loss(tl_regr_g, gt_tl_regr, gt_mask)
-        regr_br = _regr_loss(br_regr_g, gt_br_regr, gt_mask)
-        regr_ct = _regr_loss(ct_regr_g, gt_ct_regr, gt_mask)
-        regr_loss = self.regr_weight * (regr_tl + regr_br + regr_ct)
+            # 4. Offset regression loss (Corners + Center sub-pixel refinement)
+            regr_tl = _regr_loss(tl_regr_g, gt_tl_regr, gt_mask)
+            regr_br = _regr_loss(br_regr_g, gt_br_regr, gt_mask)
+            regr_ct = _regr_loss(ct_regr_g, gt_ct_regr, gt_mask)
+            regr_loss = self.regr_weight * (regr_tl + regr_br + regr_ct)
 
-        total_loss = corner_loss + center_loss + pull_loss + push_loss + regr_loss
+            total_loss = corner_loss + center_loss + pull_loss + push_loss + regr_loss
 
-        return {
-            "loss_focal": corner_loss,
-            "loss_bfor_ros": ros_loss,
-            "loss_bfor_ctr": self.lambda_ctr * ctr_loss,
-            "loss_pull": pull_loss,
-            "loss_push": push_loss,
-            "loss_regr": regr_loss,
-        }
+            return {
+                "loss_focal": corner_loss,
+                "loss_bfor_ros": ros_loss,
+                "loss_bfor_ctr": self.lambda_ctr * ctr_loss,
+                "loss_pull": pull_loss,
+                "loss_push": push_loss,
+                "loss_regr": regr_loss,
+            }
 
 
 # ==============================================================================
