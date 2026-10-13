@@ -194,6 +194,7 @@ def evaluate_coco_official(
         for idx in tqdm(
             range(len(test_set)),
             desc=f"Evaluating (Official COCO - {model_type.upper()})",
+            dynamic_ncols=True,
         ):
             img_id = test_set.dataset.ids[idx]
 
@@ -336,6 +337,7 @@ def compute_AR(
         for item in tqdm(
             test_set,
             desc=f"Evaluating ({'Canvas' if model_type == 'bfor' else 'FCOS Native'})",
+            dynamic_ncols=True,
         ):
             if model_type in ["fcos", "bfor_fcos", "centernet"]:
                 tensor_img, target_dict, labels = item

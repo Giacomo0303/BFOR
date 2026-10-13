@@ -11,7 +11,7 @@ def train_epoch(
     running_loss = 0.0
 
     desc = f"Epoch {epoch:03d} [Train]" if epoch is not None else "Training"
-    pbar = tqdm(dataloader, desc=desc, leave=False)
+    pbar = tqdm(dataloader, desc=desc, leave=False, dynamic_ncols=True)
     device_type = "cuda" if "cuda" in str(device) else "cpu"
 
     for batch_idx, (x, y) in enumerate(pbar):
@@ -97,7 +97,7 @@ def validate(model, dataloader, loss_fn, device, epoch=None):
     running_loss = 0.0
 
     desc = f"Epoch {epoch:03d} [Val]  " if epoch is not None else "Validating"
-    pbar = tqdm(dataloader, desc=desc, leave=False)
+    pbar = tqdm(dataloader, desc=desc, leave=False, dynamic_ncols=True)
     device_type = "cuda" if "cuda" in str(device) else "cpu"
 
     with torch.no_grad():
