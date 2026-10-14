@@ -33,7 +33,7 @@ CENTERNET_DATA_AUG = True  # Enable official CenterNet augmentation during train
 # B-FOR Specific Settings
 N_CHANNELS = 128
 DROP_RATE = 0.2
-ALPHA = 0.1
+ALPHA = 0.02
 LAMBDA_CTR = 1.0
 K = 9
 ALL_CLASSES = True
