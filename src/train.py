@@ -99,6 +99,7 @@ def validate(model, dataloader, loss_fn, device, epoch=None):
         model.eval()
 
     running_loss = 0.0
+    valid_batches = 0
 
     desc = f"Epoch {epoch:03d} [Val]  " if epoch is not None else "Validating"
     pbar = tqdm(dataloader, desc=desc, leave=False, dynamic_ncols=True)
@@ -131,14 +132,17 @@ def validate(model, dataloader, loss_fn, device, epoch=None):
                 else float(batch_loss)
             )
             running_loss += loss_val
-            current_avg = running_loss / (batch_idx + 1)
+            valid_batches += 1
+            current_avg = running_loss / valid_batches
 
             pbar.set_postfix(
                 {"val_loss": f"{loss_val:.4f}", "avg": f"{current_avg:.4f}"}
             )
 
     model.eval()
-    return running_loss / len(dataloader)
+    if valid_batches == 0:
+        return float("inf")
+    return running_loss / valid_batches
 
 
 def run_training(
