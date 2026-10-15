@@ -302,7 +302,6 @@ class CenterNetBFORDetector(nn.Module):
         alpha: float = 0.1,
         lambda_ctr: float = 1.0,
         ae_dim: int = 4,
-        corner_mask_type: str = "quadrant",
         input_size: Tuple[int, int] = (512, 512),
         top_k: int = 70,
         ae_threshold: float = 0.5,
@@ -316,7 +315,6 @@ class CenterNetBFORDetector(nn.Module):
         self.ae_dim = ae_dim
         self.alpha = alpha
         self.lambda_ctr = lambda_ctr
-        self.corner_mask_type = corner_mask_type
 
         self.input_size = input_size  # (512, 512)
         self.output_size = (input_size[0] // 4, input_size[1] // 4)  # (128, 128)
@@ -455,15 +453,9 @@ class CenterNetBFORDetector(nn.Module):
                     gt_br_heat[b_idx, 0], (xbr, ybr), radius, quadrant="br", box_w=ibox_w, box_h=ibox_h, delte=6.0
                 )
 
-                # Corner masks are True strictly inside the bounding box, False on all background
-                if self.corner_mask_type == "quadrant":
-                    # Strictly the corner quadrant patch inside the box
-                    tl_mask[b_idx, 0, ytl : min(ybr + 1, ytl + radius + 1), xtl : min(xbr + 1, xtl + radius + 1)] = True
-                    br_mask[b_idx, 0, max(ytl, ybr - radius) : ybr + 1, max(xtl, xbr - radius) : xbr + 1] = True
-                else:
-                    # The entire bounding box
-                    tl_mask[b_idx, 0, ytl : ybr + 1, xtl : xbr + 1] = True
-                    br_mask[b_idx, 0, ytl : ybr + 1, xtl : xbr + 1] = True
+                # Corner masks are True strictly inside the entire bounding box, False on all background
+                tl_mask[b_idx, 0, ytl : ybr + 1, xtl : xbr + 1] = True
+                br_mask[b_idx, 0, ytl : ybr + 1, xtl : xbr + 1] = True
 
                 gt_tl_regr[b_idx, k] = torch.tensor([fxtl - xtl, fytl - ytl], device=device)
                 gt_br_regr[b_idx, k] = torch.tensor([fxbr - xbr, fybr - ybr], device=device)
@@ -677,7 +669,6 @@ def build_centernet_bfor_model(
             lambda_ctr = getattr(cfg, "BFOR_LAMBDA_CTR", 1.0)
         if ae_dim is None:
             ae_dim = getattr(cfg, "CENTERNET_AE_DIM", 4)
-        corner_mask_type = kwargs.pop("corner_mask_type", getattr(cfg, "CORNER_MASK_TYPE", "quadrant"))
     except Exception:
         if alpha is None:
             alpha = 0.1
@@ -685,13 +676,11 @@ def build_centernet_bfor_model(
             lambda_ctr = 1.0
         if ae_dim is None:
             ae_dim = 4
-        corner_mask_type = kwargs.pop("corner_mask_type", "quadrant")
 
     model = CenterNetBFORDetector(
         alpha=alpha,
         lambda_ctr=lambda_ctr,
         ae_dim=ae_dim,
-        corner_mask_type=corner_mask_type,
         input_size=input_size,
         **kwargs,
     )

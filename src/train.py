@@ -1,14 +1,26 @@
+import math
 import os
 
 import torch
 from tqdm import tqdm
 
+from src.logger import TrainingLogger
+
 
 def train_epoch(
-    model, dataloader, loss_fn, optimizer, scaler, device, epoch=None, max_grad_norm=10.0
+    model,
+    dataloader,
+    loss_fn,
+    optimizer,
+    scaler,
+    device,
+    epoch=None,
+    max_grad_norm=10.0,
+    logger=None,
 ):
     model.train()
     running_loss = 0.0
+    valid_batches = 0
 
     desc = f"Epoch {epoch:03d} [Train]" if epoch is not None else "Training"
     pbar = tqdm(dataloader, desc=desc, leave=False, dynamic_ncols=True)
@@ -36,7 +48,11 @@ def train_epoch(
             batch_loss = loss_fn(out, y)
 
         if not torch.isfinite(batch_loss):
-            print(f"[Warning] Non-finite loss encountered at batch {batch_idx}: {batch_loss.item()}. Skipping update.")
+            warn_msg = f"[Warning] Non-finite loss encountered at batch {batch_idx}: {batch_loss.item()}. Skipping update."
+            if logger is not None:
+                logger(warn_msg)
+            else:
+                print(warn_msg)
             optimizer.zero_grad()
             continue
 
@@ -54,7 +70,8 @@ def train_epoch(
             else float(batch_loss)
         )
         running_loss += loss_val
-        current_avg = running_loss / (batch_idx + 1)
+        valid_batches += 1
+        current_avg = running_loss / valid_batches
 
         postfix = {
             "loss": f"{loss_val:.4f}",
@@ -85,7 +102,9 @@ def train_epoch(
 
         pbar.set_postfix(postfix)
 
-    return running_loss / len(dataloader)
+    if valid_batches == 0:
+        return float("nan")
+    return running_loss / valid_batches
 
 
 def validate(model, dataloader, loss_fn, device, epoch=None):
@@ -158,11 +177,19 @@ def run_training(
     device,
     start_epoch=0,
     max_grad_norm=10.0,
+    logger=None,
 ):
-    print(f"\n{'=' * 65}")
-    print(f"Starting training for {epochs} epochs on device: {device}")
-    print(f"Train batches: {len(train_loader)} | Val batches: {len(val_loader)}")
-    print(f"{'=' * 65}\n")
+    if logger is None:
+        logger = getattr(early_stopping, "logger", None)
+        if logger is None:
+            logger = TrainingLogger("log.txt")
+    if getattr(early_stopping, "logger", None) is None:
+        early_stopping.logger = logger
+
+    logger(f"\n{'=' * 65}")
+    logger(f"Starting training for {epochs} epochs on device: {device}")
+    logger(f"Train batches: {len(train_loader)} | Val batches: {len(val_loader)}")
+    logger(f"{'=' * 65}\n")
 
     for epoch in range(start_epoch, epochs):
         current_lr = optimizer.param_groups[0]["lr"]
@@ -177,6 +204,7 @@ def run_training(
             device=device,
             epoch=epoch + 1,
             max_grad_norm=max_grad_norm,
+            logger=logger,
         )
 
         # 2. Validation with progress bar
@@ -192,7 +220,7 @@ def run_training(
         lr_scheduler.step(val_loss)
 
         # 4. Summary print
-        print(
+        logger(
             f"Epoch {epoch + 1:03d}/{epochs:03d} | "
             f"Train Loss: {train_loss:.4f} | "
             f"Val Loss: {val_loss:.4f} | "
@@ -210,13 +238,13 @@ def run_training(
         )
 
         if early_stopping.early_stop:
-            print(f"\nTraining early-stopped at epoch {epoch + 1}!")
+            logger(f"\nTraining early-stopped at epoch {epoch + 1}!")
             break
 
-    print(f"\n{'=' * 65}")
-    print("Training finished!")
+    logger(f"\n{'=' * 65}")
+    logger("Training finished!")
     early_stopping.load_best_weights(model)
-    print(f"{'=' * 65}\n")
+    logger(f"{'=' * 65}\n")
     return model
 
 
@@ -258,17 +286,24 @@ def load_model(model, path):
 
 
 class EarlyStopping:
-    def __init__(self, path="best_model.pt", patience=10, min_delta=0.0):
+    def __init__(self, path="best_model.pt", patience=10, min_delta=0.0, logger=None):
         self.patience = patience
         self.min_delta = min_delta
         self.counter = 0
         self.early_stop = False
         self.min_validation_loss = torch.inf
         self.path = path
+        self.logger = logger
 
         dirname = os.path.dirname(self.path)
         if dirname:
             os.makedirs(dirname, exist_ok=True)
+
+    def _log(self, message: str):
+        if self.logger is not None:
+            self.logger(message)
+        else:
+            print(message)
 
     def __call__(
         self,
@@ -279,17 +314,28 @@ class EarlyStopping:
         scheduler=None,
         scaler=None,
     ):
-        if validation_loss + self.min_delta >= self.min_validation_loss:
+        if not math.isfinite(validation_loss):
             self.counter += 1
-            print(f"EarlyStopping counter: {self.counter} / {self.patience}")
+            self._log(
+                f"EarlyStopping counter: {self.counter} / {self.patience} "
+                f"(Non-finite validation loss: {validation_loss})"
+            )
             if self.counter >= self.patience:
                 self.early_stop = True
-                print(f"Early stopping triggered at epoch {current_epoch}!")
+                self._log(f"Early stopping triggered at epoch {current_epoch}!")
+            return
+
+        if validation_loss + self.min_delta >= self.min_validation_loss:
+            self.counter += 1
+            self._log(f"EarlyStopping counter: {self.counter} / {self.patience}")
+            if self.counter >= self.patience:
+                self.early_stop = True
+                self._log(f"Early stopping triggered at epoch {current_epoch}!")
         else:
             prev_loss = self.min_validation_loss
             self.min_validation_loss = validation_loss
             self.counter = 0
-            print(
+            self._log(
                 f"--> Val loss improved ({prev_loss:.4f} --> {validation_loss:.4f}). "
                 f"Saving checkpoint to {self.path}..."
             )
@@ -310,5 +356,5 @@ class EarlyStopping:
     def load_best_weights(self, model):
         checkpoint = torch.load(self.path, weights_only=False)
         model.load_state_dict(checkpoint["model_state_dict"])
-        print(f"Loaded best model weights from {self.path}")
+        self._log(f"Loaded best model weights from {self.path}")
         return model
