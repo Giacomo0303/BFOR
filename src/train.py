@@ -87,18 +87,12 @@ def train_epoch(
                 postfix["ctr"] = f"{loss_dict['bbox_ctrness'].item():.3f}"
             if "bbox_objness" in loss_dict:
                 postfix["obj"] = f"{loss_dict['bbox_objness'].item():.3f}"
-            if "loss_focal" in loss_dict:
-                postfix["foc"] = f"{loss_dict['loss_focal'].item():.3f}"
-            if "loss_bfor_ros" in loss_dict:
-                postfix["ros"] = f"{loss_dict['loss_bfor_ros'].item():.3f}"
-            if "loss_bfor_ctr" in loss_dict:
-                postfix["ctr"] = f"{loss_dict['loss_bfor_ctr'].item():.3f}"
-            if "loss_pull" in loss_dict:
-                postfix["pull"] = f"{loss_dict['loss_pull'].item():.3f}"
-            if "loss_push" in loss_dict:
-                postfix["push"] = f"{loss_dict['loss_push'].item():.3f}"
-            if "loss_regr" in loss_dict:
-                postfix["reg"] = f"{loss_dict['loss_regr'].item():.3f}"
+            if "hm_loss" in loss_dict:
+                postfix["hm"] = f"{loss_dict['hm_loss'].item():.3f}"
+            if "wh_loss" in loss_dict:
+                postfix["wh"] = f"{loss_dict['wh_loss'].item():.3f}"
+            if "off_loss" in loss_dict:
+                postfix["off"] = f"{loss_dict['off_loss'].item():.3f}"
 
         pbar.set_postfix(postfix)
 
@@ -217,7 +211,10 @@ def run_training(
         )
 
         # 3. Learning rate scheduler step
-        lr_scheduler.step(val_loss)
+        if isinstance(lr_scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+            lr_scheduler.step(val_loss)
+        else:
+            lr_scheduler.step()
 
         # 4. Summary print
         logger(

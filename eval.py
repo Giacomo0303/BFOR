@@ -10,7 +10,7 @@ from torchvision.ops import box_convert, box_iou, nms
 from tqdm import tqdm
 
 import run_config as cfg
-from src.datasets import COCO2017, PascalVOC
+from src.datasets import COCO2017, PascalVOC, VOC_CLASSES
 from src.inference_utils import decode_predictions
 from src.model import BFOR_model
 from src.train import load_model
@@ -198,7 +198,7 @@ def evaluate_coco_official(
         ):
             img_id = test_set.dataset.ids[idx]
 
-            if model_type in ["fcos", "bfor_fcos", "centernet", "centernet_bfor"]:
+            if model_type in ["fcos", "bfor_fcos", "centernet"]:
                 tensor_img, _, _ = test_set[idx]
                 x = [tensor_img.to(device)]
 
@@ -339,7 +339,7 @@ def compute_AR(
             desc=f"Evaluating ({'Canvas' if model_type == 'bfor' else 'FCOS Native'})",
             dynamic_ncols=True,
         ):
-            if model_type in ["fcos", "bfor_fcos", "centernet", "centernet_bfor"]:
+            if model_type in ["fcos", "bfor_fcos", "centernet"]:
                 tensor_img, target_dict, labels = item
                 gt_boxes = target_dict["boxes"].to(device)  # [N, 4] in xyxy native
                 if len(gt_boxes) == 0:
@@ -477,6 +477,193 @@ def compute_AR(
     return micro_avg
 
 
+def voc_ap(rec, prec, use_07_metric=True):
+    """
+    Exact PASCAL VOC AP calculation (from CenterNet voc_eval.py):
+      - use_07_metric=True:  VOC 2007 11-point interpolation
+      - use_07_metric=False: VOC 2010+ all-point precision envelope area
+    """
+    if use_07_metric:
+        ap = 0.0
+        for t in np.arange(0.0, 1.1, 0.1):
+            p = 0.0 if np.sum(rec >= t) == 0 else float(np.max(prec[rec >= t]))
+            ap += p / 11.0
+        return ap
+
+    mrec = np.concatenate(([0.0], rec, [1.0]))
+    mpre = np.concatenate(([0.0], prec, [0.0]))
+    for i in range(mpre.size - 1, 0, -1):
+        mpre[i - 1] = np.maximum(mpre[i - 1], mpre[i])
+    i = np.where(mrec[1:] != mrec[:-1])[0]
+    return float(np.sum((mrec[i + 1] - mrec[i]) * mpre[i + 1]))
+
+
+def evaluate_voc_map(
+    model,
+    test_set,
+    device,
+    iou_thresh=0.5,
+    model_type="centernet",
+):
+    """
+    Official PASCAL VOC 2007 per-class mAP@0.5 evaluation protocol
+    (matches CenterNet Objects as Points Appendix D / Table 6):
+      - Evaluates all 20 VOC foreground classes
+      - Excludes difficult=1 GT boxes from npos and ignores detections matching them
+      - Computes VOC07 11-point AP and VOC10+ all-point AP per class
+    """
+    model.eval()
+    device_type = "cuda" if "cuda" in str(device) else "cpu"
+
+    class_recs = {cls_name: {} for cls_name in VOC_CLASSES}
+    npos = {cls_name: 0 for cls_name in VOC_CLASSES}
+    class_dets = {cls_name: [] for cls_name in VOC_CLASSES}
+
+    with torch.no_grad():
+        for idx in tqdm(
+            range(len(test_set)),
+            desc=f"Evaluating (VOC mAP@0.5 - {model_type.upper()})",
+            dynamic_ncols=True,
+        ):
+            tensor_img, target_dict, labels = test_set[idx]
+
+            # Extract raw VOC XML annotations when available to respect 'difficult' flags
+            per_cls_boxes = {c: [] for c in VOC_CLASSES}
+            per_cls_diff = {c: [] for c in VOC_CLASSES}
+            used_raw_xml = False
+            if hasattr(test_set, "dataset"):
+                raw_sample = test_set.dataset[idx]
+                if isinstance(raw_sample, tuple) and len(raw_sample) >= 2 and isinstance(raw_sample[1], dict) and "annotation" in raw_sample[1]:
+                    used_raw_xml = True
+                    objs = raw_sample[1]["annotation"].get("object", [])
+                    if not isinstance(objs, list):
+                        objs = [objs]
+                    for obj in objs:
+                        cname = obj["name"]
+                        if cname not in per_cls_boxes:
+                            continue
+                        b = obj["bndbox"]
+                        per_cls_boxes[cname].append([
+                            float(b["xmin"]),
+                            float(b["ymin"]),
+                            float(b["xmax"]),
+                            float(b["ymax"]),
+                        ])
+                        per_cls_diff[cname].append(int(obj.get("difficult", 0)) == 1)
+
+            if not used_raw_xml:
+                gt_boxes_np = target_dict["boxes"].cpu().numpy()
+                for g_idx, cname in enumerate(labels):
+                    if cname in per_cls_boxes:
+                        per_cls_boxes[cname].append(gt_boxes_np[g_idx].tolist())
+                        per_cls_diff[cname].append(False)
+
+            for cname in VOC_CLASSES:
+                bb_list = per_cls_boxes[cname]
+                diff_arr = np.array(per_cls_diff[cname], dtype=bool)
+                bb_arr = np.array(bb_list, dtype=np.float64) if len(bb_list) > 0 else np.zeros((0, 4), dtype=np.float64)
+                npos[cname] += int(np.sum(~diff_arr))
+                class_recs[cname][idx] = {
+                    "bbox": bb_arr,
+                    "difficult": diff_arr,
+                    "det": [False] * len(bb_list),
+                }
+
+            x = [tensor_img.to(device)]
+            with torch.amp.autocast(device_type=device_type, dtype=torch.float16, enabled=(device_type == "cuda")):
+                out = model(x)
+
+            pred_boxes = out[0]["boxes"].detach().cpu()
+            pred_scores = out[0]["scores"].detach().cpu()
+            pred_labels = out[0]["labels"].detach().cpu()
+
+            for b_idx in range(len(pred_boxes)):
+                lbl_id = int(pred_labels[b_idx].item())
+                if 1 <= lbl_id <= len(VOC_CLASSES):
+                    cname = VOC_CLASSES[lbl_id - 1]
+                    class_dets[cname].append((
+                        idx,
+                        float(pred_scores[b_idx].item()),
+                        pred_boxes[b_idx].tolist(),
+                    ))
+
+    print("\n" + "=" * 62)
+    print(f"{'Class':<16} | {'GT (non-diff)':>13} | {'AP07@0.5':>12} | {'AP10+@0.5':>12}")
+    print("-" * 62)
+
+    aps07 = []
+    aps10 = []
+    for cname in VOC_CLASSES:
+        dets = class_dets[cname]
+        recs = {img_i: {"bbox": r["bbox"], "difficult": r["difficult"], "det": list(r["det"])} for img_i, r in class_recs[cname].items()}
+        npos_c = npos[cname]
+
+        if npos_c == 0:
+            print(f"{cname:<16} | {npos_c:>13d} | {'N/A':>12} | {'N/A':>12}")
+            continue
+
+        if len(dets) == 0:
+            ap07, ap10 = 0.0, 0.0
+        else:
+            dets_sorted = sorted(dets, key=lambda d: -d[1])
+            nd = len(dets_sorted)
+            tp = np.zeros(nd, dtype=np.float64)
+            fp = np.zeros(nd, dtype=np.float64)
+
+            for d_idx, (img_i, _score, bb_list) in enumerate(dets_sorted):
+                R = recs[img_i]
+                bb = np.array(bb_list, dtype=np.float64)
+                BBGT = R["bbox"]
+                ovmax = -np.inf
+                jmax = -1
+
+                if BBGT.size > 0:
+                    ixmin = np.maximum(BBGT[:, 0], bb[0])
+                    iymin = np.maximum(BBGT[:, 1], bb[1])
+                    ixmax = np.minimum(BBGT[:, 2], bb[2])
+                    iymax = np.minimum(BBGT[:, 3], bb[3])
+                    iw = np.maximum(ixmax - ixmin + 1.0, 0.0)
+                    ih = np.maximum(iymax - iymin + 1.0, 0.0)
+                    inters = iw * ih
+                    uni = (
+                        (bb[2] - bb[0] + 1.0) * (bb[3] - bb[1] + 1.0)
+                        + (BBGT[:, 2] - BBGT[:, 0] + 1.0) * (BBGT[:, 3] - BBGT[:, 1] + 1.0)
+                        - inters
+                    )
+                    overlaps = inters / uni
+                    ovmax = float(np.max(overlaps))
+                    jmax = int(np.argmax(overlaps))
+
+                if ovmax > iou_thresh:
+                    if not R["difficult"][jmax]:
+                        if not R["det"][jmax]:
+                            tp[d_idx] = 1.0
+                            R["det"][jmax] = True
+                        else:
+                            fp[d_idx] = 1.0
+                else:
+                    fp[d_idx] = 1.0
+
+            fp_cum = np.cumsum(fp)
+            tp_cum = np.cumsum(tp)
+            rec = tp_cum / float(npos_c)
+            prec = tp_cum / np.maximum(tp_cum + fp_cum, np.finfo(np.float64).eps)
+            ap07 = voc_ap(rec, prec, use_07_metric=True)
+            ap10 = voc_ap(rec, prec, use_07_metric=False)
+
+        aps07.append(ap07)
+        aps10.append(ap10)
+        print(f"{cname:<16} | {npos_c:>13d} | {ap07 * 100:>11.2f}% | {ap10 * 100:>11.2f}%")
+
+    mean_ap07 = float(np.mean(aps07)) if aps07 else 0.0
+    mean_ap10 = float(np.mean(aps10)) if aps10 else 0.0
+    print("=" * 62)
+    print(f"VOC 2007  mAP@{iou_thresh} (11-pt) : {mean_ap07 * 100:.2f}%")
+    print(f"VOC 2010+ mAP@{iou_thresh} (all)   : {mean_ap10 * 100:.2f}%")
+    print("=" * 62 + "\n")
+    return mean_ap07
+
+
 # =====================================================================
 # Main CLI Entrypoint
 # =====================================================================
@@ -488,9 +675,9 @@ def main():
     parser.add_argument(
         "--model",
         type=str,
-        choices=["bfor", "fcos", "bfor_fcos", "centernet", "centernet_bfor"],
+        choices=["bfor", "fcos", "bfor_fcos", "centernet"],
         default=getattr(cfg, "MODEL_NAME", "bfor"),
-        help="Model architecture: 'bfor', 'fcos', 'bfor_fcos', 'centernet', or 'centernet_bfor' (default: cfg.MODEL_NAME).",
+        help="Model architecture: 'bfor', 'fcos', 'bfor_fcos', or 'centernet' (default: cfg.MODEL_NAME).",
     )
     parser.add_argument(
         "--dataset",
@@ -502,9 +689,21 @@ def main():
     parser.add_argument(
         "--mode",
         type=str,
-        choices=["official", "canvas"],
+        choices=["official", "canvas", "voc_map"],
         default="official",
-        help="Evaluation mode: 'official' (author's COCOeval on original image resolution) or 'canvas' (448x448 canvas). Default: 'official'.",
+        help="Evaluation mode: 'official' (COCOeval AR@1000), 'canvas' (448x448 AR), or 'voc_map' (VOC 2007 20-class mAP@0.5). Default: 'official'.",
+    )
+    parser.add_argument(
+        "--flip-test",
+        action="store_true",
+        default=False,
+        help="Force horizontal flip test-time augmentation for CenterNet.",
+    )
+    parser.add_argument(
+        "--no-flip-test",
+        action="store_true",
+        default=False,
+        help="Disable horizontal flip test-time augmentation for CenterNet.",
     )
     parser.add_argument(
         "--data-path",
@@ -561,27 +760,15 @@ def main():
                 checkpoint_path = cfg.SAVE_PATH
             else:
                 checkpoint_path = "best_fcos_voc20.pt"
-        elif args.model == "centernet_bfor":
-            default_ckpt = "best_centernet_bfor_voc_class_agnostic.pt"
-            if os.path.exists(cfg.SAVE_PATH):
-                checkpoint_path = cfg.SAVE_PATH
-            elif os.path.exists(default_ckpt):
-                checkpoint_path = default_ckpt
-            else:
-                checkpoint_path = default_ckpt
         elif args.model == "centernet":
-            is_class_agnostic = getattr(cfg, "CENTERNET_CLASS_AGNOSTIC", False)
-            default_ckpt = (
-                "best_centernet_voc_class_agnostic.pt"
-                if is_class_agnostic
-                else "best_centernet_voc20.pt"
-            )
-            if os.path.exists(cfg.SAVE_PATH):
-                checkpoint_path = cfg.SAVE_PATH
-            elif os.path.exists(default_ckpt):
+            layers = getattr(cfg, "CENTERNET_RESNET_LAYERS", 50)
+            dcn_tag = "dcn" if getattr(cfg, "CENTERNET_USE_DCN", True) else "deconv"
+            pre_tag = "pretrain" if getattr(cfg, "CENTERNET_PRETRAINED_BACKBONE", True) else "scratch"
+            default_ckpt = f"best_centernet_r{layers}_{dcn_tag}_{pre_tag}_voc20.pt"
+            if os.path.exists(default_ckpt):
                 checkpoint_path = default_ckpt
-            elif os.path.exists("best_centernet_voc20.pt"):
-                checkpoint_path = "best_centernet_voc20.pt"
+            elif os.path.exists(cfg.SAVE_PATH):
+                checkpoint_path = cfg.SAVE_PATH
             else:
                 checkpoint_path = default_ckpt
         else:
@@ -594,13 +781,26 @@ def main():
             else:
                 checkpoint_path = cfg.SAVE_PATH
 
+    if args.mode == "voc_map":
+        if args.dataset != "voc" or args.model not in ["centernet", "fcos"]:
+            raise ValueError(
+                "--mode voc_map is only supported for --dataset voc with multi-class models ('centernet' or 'fcos')."
+            )
+
     if args.unseen_only:
         eval_all = False
-    elif args.all_classes:
+    elif args.all_classes or args.mode == "voc_map":
         eval_all = True
     else:
         # Default behavior when neither flag is explicitly passed
         eval_all = getattr(cfg, "ALL_CLASSES", True) if args.dataset == "voc" else False
+
+    if args.flip_test:
+        use_flip_test = True
+    elif args.no_flip_test:
+        use_flip_test = False
+    else:
+        use_flip_test = getattr(cfg, "CENTERNET_FLIP_TEST", True) if args.mode == "voc_map" else False
 
     device = cfg.DEVICE if torch.cuda.is_available() else "cpu"
 
@@ -649,28 +849,19 @@ def main():
             score_thresh=0.0,
             detections_per_img=1000,
         ).to(device)
-    elif args.model == "centernet_bfor":
-        from src.centernet_bfor import build_centernet_bfor_model
-
-        model = build_centernet_bfor_model(
-            alpha=getattr(cfg, "ALPHA", 0.1),
-            lambda_ctr=getattr(cfg, "LAMBDA_CTR", 1.0),
-            ae_dim=getattr(cfg, "CENTERNET_AE_DIM", 4),
-            top_k=getattr(cfg, "CENTERNET_TOP_K", 70),
-            ae_threshold=getattr(cfg, "CENTERNET_AE_THRESH", 0.5),
-            score_thresh=0.0,
-            max_detections=1000,
-        ).to(device)
     elif args.model == "centernet":
         from src.centernet_model import build_centernet_model
 
+        cn_top_k = getattr(cfg, "CENTERNET_TOP_K", 100) if args.mode == "voc_map" else 1000
         model = build_centernet_model(
-            class_agnostic=getattr(cfg, "CENTERNET_CLASS_AGNOSTIC", False),
-            ae_dim=getattr(cfg, "CENTERNET_AE_DIM", 4 if getattr(cfg, "CENTERNET_CLASS_AGNOSTIC", False) else 1),
-            top_k=getattr(cfg, "CENTERNET_TOP_K", 70),
-            ae_threshold=getattr(cfg, "CENTERNET_AE_THRESH", 0.5),
+            num_classes=getattr(cfg, "CENTERNET_NUM_CLASSES", 20),
+            num_layers=getattr(cfg, "CENTERNET_RESNET_LAYERS", 50),
+            pretrained_backbone=False,
+            use_dcn=getattr(cfg, "CENTERNET_USE_DCN", True),
+            input_size=getattr(cfg, "CENTERNET_INPUT_SIZE", 512),
+            top_k=cn_top_k,
             score_thresh=0.0,
-            max_detections=1000,
+            flip_test=use_flip_test,
         ).to(device)
     else:
         model = BFOR_model(n_channels=cfg.N_CHANNELS, drop_rate=cfg.DROP_RATE).to(device)
@@ -683,7 +874,16 @@ def main():
             f"[Warning] Checkpoint '{checkpoint_path}' not found! Running with uninitialized weights."
         )
 
-    if args.dataset == "coco" and args.mode == "official":
+    if args.mode == "voc_map":
+        print(f"Running PASCAL VOC 2007 mAP@0.5 Protocol ({args.model.upper()}, flip_test={use_flip_test})...")
+        evaluate_voc_map(
+            model=model,
+            test_set=test_set,
+            device=device,
+            iou_thresh=0.5,
+            model_type=args.model,
+        )
+    elif args.dataset == "coco" and args.mode == "official":
         print(f"Running OFFICIAL COCOeval Protocol ({args.model.upper()})...")
         evaluate_coco_official(
             model=model,

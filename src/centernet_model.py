@@ -5,409 +5,275 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
-from torchvision.ops import nms
+from torchvision.models import (
+    ResNet18_Weights,
+    ResNet34_Weights,
+    ResNet50_Weights,
+    ResNet101_Weights,
+    resnet18,
+    resnet34,
+    resnet50,
+    resnet101,
+)
+from torchvision.ops import deform_conv2d
+
+
+BN_MOMENTUM = 0.1
 
 
 # ==============================================================================
-# 1. Pure PyTorch Pooling Operations (Exact Autograd Replacement for CUDA C++)
+# 1. Modulated Deformable Convolution v2 & Initialization Helpers
 # ==============================================================================
 
-class TopPool(nn.Module):
-    """Max-pooling from bottom to top along vertical axis."""
-    def forward(self, x: Tensor) -> Tensor:
-        return torch.flip(torch.cummax(torch.flip(x, dims=[-2]), dim=-2)[0], dims=[-2])
+class ModulatedDeformConv2d(nn.Module):
+    """
+    Pure PyTorch/torchvision drop-in equivalent of DCNv2 (DCN class in
+    xingyizhou/CenterNet/src/lib/models/networks/DCNv2/dcn_v2.py).
+    Uses native torchvision.ops.deform_conv2d with learned 2D offsets + modulation masks.
+    """
 
-
-class BottomPool(nn.Module):
-    """Max-pooling from top to bottom along vertical axis."""
-    def forward(self, x: Tensor) -> Tensor:
-        return torch.cummax(x, dim=-2)[0]
-
-
-class LeftPool(nn.Module):
-    """Max-pooling from right to left along horizontal axis."""
-    def forward(self, x: Tensor) -> Tensor:
-        return torch.flip(torch.cummax(torch.flip(x, dims=[-1]), dim=-1)[0], dims=[-1])
-
-
-class RightPool(nn.Module):
-    """Max-pooling from left to right along horizontal axis."""
-    def forward(self, x: Tensor) -> Tensor:
-        return torch.cummax(x, dim=-1)[0]
-
-
-# ==============================================================================
-# 2. Basic Convolutional and Residual Building Blocks
-# ==============================================================================
-
-class convolution(nn.Module):
-    def __init__(self, k: int, inp_dim: int, out_dim: int, stride: int = 1, with_bn: bool = True):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int = 3,
+        stride: int = 1,
+        padding: int = 1,
+        dilation: int = 1,
+        deformable_groups: int = 1,
+    ):
         super().__init__()
-        pad = (k - 1) // 2
-        self.conv = nn.Conv2d(
-            inp_dim, out_dim, (k, k), padding=(pad, pad), stride=(stride, stride), bias=not with_bn
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.kernel_size = (kernel_size, kernel_size) if isinstance(kernel_size, int) else kernel_size
+        self.stride = stride
+        self.padding = padding
+        self.dilation = dilation
+        self.deformable_groups = deformable_groups
+
+        self.weight = nn.Parameter(torch.empty(out_channels, in_channels, *self.kernel_size))
+        self.bias = nn.Parameter(torch.empty(out_channels))
+        self.reset_parameters()
+
+        self.conv_offset_mask = nn.Conv2d(
+            self.in_channels,
+            self.deformable_groups * 3 * self.kernel_size[0] * self.kernel_size[1],
+            kernel_size=self.kernel_size,
+            stride=(self.stride, self.stride),
+            padding=(self.padding, self.padding),
+            bias=True,
         )
-        self.bn = nn.BatchNorm2d(out_dim) if with_bn else nn.Sequential()
-        self.relu = nn.ReLU(inplace=True)
+        self.init_offset()
+
+    def reset_parameters(self):
+        n = self.in_channels * self.kernel_size[0] * self.kernel_size[1]
+        stdv = 1.0 / math.sqrt(n)
+        self.weight.data.uniform_(-stdv, stdv)
+        self.bias.data.zero_()
+
+    def init_offset(self):
+        self.conv_offset_mask.weight.data.zero_()
+        self.conv_offset_mask.bias.data.zero_()
 
     def forward(self, x: Tensor) -> Tensor:
-        return self.relu(self.bn(self.conv(x)))
-
-
-class residual(nn.Module):
-    def __init__(self, k: int, inp_dim: int, out_dim: int, stride: int = 1, with_bn: bool = True):
-        super().__init__()
-        self.conv1 = nn.Conv2d(inp_dim, out_dim, (3, 3), padding=(1, 1), stride=(stride, stride), bias=False)
-        self.bn1 = nn.BatchNorm2d(out_dim)
-        self.relu1 = nn.ReLU(inplace=True)
-
-        self.conv2 = nn.Conv2d(out_dim, out_dim, (3, 3), padding=(1, 1), bias=False)
-        self.bn2 = nn.BatchNorm2d(out_dim)
-
-        self.skip = (
-            nn.Sequential(
-                nn.Conv2d(inp_dim, out_dim, (1, 1), stride=(stride, stride), bias=False),
-                nn.BatchNorm2d(out_dim),
-            )
-            if stride != 1 or inp_dim != out_dim
-            else nn.Sequential()
-        )
-        self.relu = nn.ReLU(inplace=True)
-
-    def forward(self, x: Tensor) -> Tensor:
-        conv1 = self.conv1(x)
-        bn1 = self.bn1(conv1)
-        relu1 = self.relu1(bn1)
-
-        conv2 = self.conv2(relu1)
-        bn2 = self.bn2(conv2)
-
-        skip = self.skip(x)
-        return self.relu(bn2 + skip)
-
-
-def make_layer(k: int, inp_dim: int, out_dim: int, modules: int, layer=convolution, **kwargs):
-    layers = [layer(k, inp_dim, out_dim, **kwargs)]
-    for _ in range(1, modules):
-        layers.append(layer(k, out_dim, out_dim, **kwargs))
-    return nn.Sequential(*layers)
-
-
-def make_layer_revr(k: int, inp_dim: int, out_dim: int, modules: int, layer=convolution, **kwargs):
-    layers = []
-    for _ in range(modules - 1):
-        layers.append(layer(k, inp_dim, inp_dim, **kwargs))
-    layers.append(layer(k, inp_dim, out_dim, **kwargs))
-    return nn.Sequential(*layers)
-
-
-class MergeUp(nn.Module):
-    def forward(self, up1: Tensor, up2: Tensor) -> Tensor:
-        return up1 + up2
-
-
-# ==============================================================================
-# 3. Cascade Corner Pooling & Center Pooling Modules
-# ==============================================================================
-
-class CascadeCornerPool(nn.Module):
-    """
-    Cascade Corner Pooling for Top-Left and Bottom-Right corners
-    (Duan et al., ICCV 2019, Section 3.2, Figure 4).
-    """
-    def __init__(self, dim: int, pool1_cls, pool2_cls):
-        super().__init__()
-        self.p1_conv1 = convolution(3, dim, 128)
-        self.p2_conv1 = convolution(3, dim, 128)
-
-        self.p_conv1 = nn.Conv2d(128, dim, (3, 3), padding=(1, 1), bias=False)
-        self.p_bn1 = nn.BatchNorm2d(dim)
-
-        self.conv1 = nn.Conv2d(dim, dim, (1, 1), bias=False)
-        self.bn1 = nn.BatchNorm2d(dim)
-        self.relu1 = nn.ReLU(inplace=True)
-
-        self.conv2 = convolution(3, dim, dim)
-
-        self.pool1 = pool1_cls()
-        self.pool2 = pool2_cls()
-
-        self.look_conv1 = convolution(3, dim, 128)
-        self.look_conv2 = convolution(3, dim, 128)
-        self.P1_look_conv = nn.Conv2d(128, 128, (3, 3), padding=(1, 1), bias=False)
-        self.P2_look_conv = nn.Conv2d(128, 128, (3, 3), padding=(1, 1), bias=False)
-
-    def forward(self, x: Tensor) -> Tensor:
-        # Branch 1
-        look_conv1 = self.look_conv1(x)
-        p1_conv1 = self.p1_conv1(x)
-        look_right = self.pool2(look_conv1)
-        p1_look_conv = self.P1_look_conv(p1_conv1 + look_right)
-        pool1 = self.pool1(p1_look_conv)
-
-        # Branch 2
-        look_conv2 = self.look_conv2(x)
-        p2_conv1 = self.p2_conv1(x)
-        look_down = self.pool1(look_conv2)
-        p2_look_conv = self.P2_look_conv(p2_conv1 + look_down)
-        pool2 = self.pool2(p2_look_conv)
-
-        # Merge branches
-        p_conv1 = self.p_conv1(pool1 + pool2)
-        p_bn1 = self.p_bn1(p_conv1)
-
-        conv1 = self.conv1(x)
-        bn1 = self.bn1(conv1)
-        relu1 = self.relu1(p_bn1 + bn1)
-
-        return self.conv2(relu1)
-
-
-class CenterPool(nn.Module):
-    """
-    Center Pooling (cross max-pooling) for center keypoints
-    (Duan et al., ICCV 2019, Section 3.2, Figure 4).
-    """
-    def __init__(self, dim: int):
-        super().__init__()
-        self.p1_conv1 = convolution(3, dim, 128)
-        self.p2_conv1 = convolution(3, dim, 128)
-
-        self.p_conv1 = nn.Conv2d(128, dim, (3, 3), padding=(1, 1), bias=False)
-        self.p_bn1 = nn.BatchNorm2d(dim)
-
-        self.conv1 = nn.Conv2d(dim, dim, (1, 1), bias=False)
-        self.bn1 = nn.BatchNorm2d(dim)
-        self.relu1 = nn.ReLU(inplace=True)
-
-        self.conv2 = convolution(3, dim, dim)
-
-        self.pool1 = TopPool()
-        self.pool2 = LeftPool()
-        self.pool3 = BottomPool()
-        self.pool4 = RightPool()
-
-    def forward(self, x: Tensor) -> Tensor:
-        p1_conv1 = self.p1_conv1(x)
-        pool1 = self.pool1(p1_conv1)
-        pool1 = self.pool3(pool1)
-
-        p2_conv1 = self.p2_conv1(x)
-        pool2 = self.pool2(p2_conv1)
-        pool2 = self.pool4(pool2)
-
-        p_conv1 = self.p_conv1(pool1 + pool2)
-        p_bn1 = self.p_bn1(p_conv1)
-
-        conv1 = self.conv1(x)
-        bn1 = self.bn1(conv1)
-        relu1 = self.relu1(p_bn1 + bn1)
-
-        return self.conv2(relu1)
-
-
-# ==============================================================================
-# 4. Hourglass-52 Recursive Module and Layers
-# ==============================================================================
-
-def make_hg_layer(kernel: int, dim0: int, dim1: int, mod: int, layer=residual):
-    layers = [layer(kernel, dim0, dim1, stride=2)]
-    for _ in range(mod - 1):
-        layers.append(layer(kernel, dim1, dim1))
-    return nn.Sequential(*layers)
-
-
-class HourglassModule(nn.Module):
-    """Recursive Hourglass Module (Newell et al., ECCV 2016)."""
-    def __init__(self, n: int, dims: List[int], modules: List[int], layer=residual):
-        super().__init__()
-        self.n = n
-        curr_mod = modules[0]
-        next_mod = modules[1]
-        curr_dim = dims[0]
-        next_dim = dims[1]
-
-        self.up1 = make_layer(3, curr_dim, curr_dim, curr_mod, layer=layer)
-        self.max1 = nn.Sequential()
-        self.low1 = make_hg_layer(3, curr_dim, next_dim, curr_mod, layer=layer)
-        self.low2 = (
-            HourglassModule(n - 1, dims[1:], modules[1:], layer=layer)
-            if n > 1
-            else make_layer(3, next_dim, next_dim, next_mod, layer=layer)
-        )
-        self.low3 = make_layer_revr(3, next_dim, curr_dim, curr_mod, layer=layer)
-        self.up2 = nn.Upsample(scale_factor=2)
-        self.merge = MergeUp()
-
-    def forward(self, x: Tensor) -> Tensor:
-        up1 = self.up1(x)
-        max1 = self.max1(x)
-        low1 = self.low1(max1)
-        low2 = self.low2(low1)
-        low3 = self.low3(low2)
-        up2 = self.up2(low3)
-        return self.merge(up1, up2)
-
-
-def make_kp_layer(cnv_dim: int, curr_dim: int, out_dim: int) -> nn.Sequential:
-    return nn.Sequential(
-        convolution(3, cnv_dim, curr_dim, with_bn=False),
-        nn.Conv2d(curr_dim, out_dim, (1, 1)),
-    )
-
-
-# ==============================================================================
-# 5. Full Standalone CenterNet-52 Network Architecture
-# ==============================================================================
-
-class CenterNet52Backbone(nn.Module):
-    """
-    1-stack Hourglass-52 CenterNet backbone with Cascade Corner Pooling
-    and Center Pooling heads (Duan et al., ICCV 2019).
-    """
-    def __init__(self, num_classes: int = 20, ae_dim: int = 1):
-        super().__init__()
-        self.num_classes = num_classes
-        self.ae_dim = ae_dim
-        n = 5
-        dims = [256, 256, 384, 384, 384, 512]
-        modules = [2, 2, 2, 2, 2, 4]
-        cnv_dim = 256
-        curr_dim = dims[0]
-
-        # Stem (downsamples 4x)
-        self.pre = nn.Sequential(
-            convolution(7, 3, 128, stride=2),
-            residual(3, 128, 256, stride=2),
+        out = self.conv_offset_mask(x)
+        o1, o2, mask = torch.chunk(out, 3, dim=1)
+        offset = torch.cat((o1, o2), dim=1)
+        mask = torch.sigmoid(mask)
+        dtype = x.dtype
+        return deform_conv2d(
+            x,
+            offset.to(dtype),
+            self.weight.to(dtype),
+            self.bias.to(dtype),
+            stride=(self.stride, self.stride),
+            padding=(self.padding, self.padding),
+            dilation=(self.dilation, self.dilation),
+            mask=mask.to(dtype),
         )
 
-        # Hourglass-52 stack
-        self.kps = nn.ModuleList([HourglassModule(n, dims, modules, layer=residual)])
-        self.cnvs = nn.ModuleList([convolution(3, curr_dim, cnv_dim)])
 
-        # Pooling layers
-        self.tl_cnvs = nn.ModuleList([CascadeCornerPool(cnv_dim, TopPool, LeftPool)])
-        self.br_cnvs = nn.ModuleList([CascadeCornerPool(cnv_dim, BottomPool, RightPool)])
-        self.ct_cnvs = nn.ModuleList([CenterPool(cnv_dim)])
+def fill_up_weights(up: nn.ConvTranspose2d):
+    """Bilinear upsampling weight initialization (Zhou et al. resnet_dcn.py)."""
+    w = up.weight.data
+    f = math.ceil(w.size(2) / 2)
+    c = (2 * f - 1 - f % 2) / (2.0 * f)
+    for i in range(w.size(2)):
+        for j in range(w.size(3)):
+            w[0, 0, i, j] = (1 - math.fabs(i / f - c)) * (1 - math.fabs(j / f - c))
+    for ch in range(1, w.size(0)):
+        w[ch, 0, :, :] = w[0, 0, :, :]
 
-        # Heatmaps (initialized with -2.19 bias for focal loss stability)
-        self.tl_heats = nn.ModuleList([make_kp_layer(cnv_dim, curr_dim, num_classes)])
-        self.br_heats = nn.ModuleList([make_kp_layer(cnv_dim, curr_dim, num_classes)])
-        self.ct_heats = nn.ModuleList([make_kp_layer(cnv_dim, curr_dim, num_classes)])
 
-        for tl_heat, br_heat, ct_heat in zip(self.tl_heats, self.br_heats, self.ct_heats):
-            tl_heat[-1].bias.data.fill_(-2.19)
-            br_heat[-1].bias.data.fill_(-2.19)
-            ct_heat[-1].bias.data.fill_(-2.19)
-
-        # Associative Embedding tags (ae_dim channels: 1D for multi-class or D-dim for class-agnostic)
-        self.tl_tags = nn.ModuleList([make_kp_layer(cnv_dim, curr_dim, ae_dim)])
-        self.br_tags = nn.ModuleList([make_kp_layer(cnv_dim, curr_dim, ae_dim)])
-
-        # Sub-pixel offsets (2D)
-        self.tl_regrs = nn.ModuleList([make_kp_layer(cnv_dim, curr_dim, 2)])
-        self.br_regrs = nn.ModuleList([make_kp_layer(cnv_dim, curr_dim, 2)])
-        self.ct_regrs = nn.ModuleList([make_kp_layer(cnv_dim, curr_dim, 2)])
-
-    def forward(
-        self, x: Tensor
-    ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
-        inter = self.pre(x)
-        kp = self.kps[0](inter)
-        cnv = self.cnvs[0](kp)
-
-        tl_cnv = self.tl_cnvs[0](cnv)
-        br_cnv = self.br_cnvs[0](cnv)
-        ct_cnv = self.ct_cnvs[0](cnv)
-
-        tl_heat = self.tl_heats[0](tl_cnv)
-        br_heat = self.br_heats[0](br_cnv)
-        ct_heat = self.ct_heats[0](ct_cnv)
-
-        tl_tag = self.tl_tags[0](tl_cnv)
-        br_tag = self.br_tags[0](br_cnv)
-
-        tl_regr = self.tl_regrs[0](tl_cnv)
-        br_regr = self.br_regrs[0](br_cnv)
-        ct_regr = self.ct_regrs[0](ct_cnv)
-
-        return tl_heat, br_heat, ct_heat, tl_tag, br_tag, tl_regr, br_regr, ct_regr
+def fill_fc_weights(layers: nn.Module):
+    """Head conv initialization: N(0, 0.001) weights, zero bias (Zhou et al. resnet_dcn.py)."""
+    for m in layers.modules():
+        if isinstance(m, nn.Conv2d):
+            nn.init.normal_(m.weight, std=0.001)
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
 
 
 # ==============================================================================
-# 6. CenterNet Loss Functions (Exact Formulation from Paper & Official Code)
+# 2. CenterNet ResNet Backbone + Deconv/DCN Upsampler + Prediction Heads
 # ==============================================================================
 
-def _neg_loss(preds: List[Tensor], gt: Tensor) -> Tensor:
-    """Gaussian Focal Loss (CornerNet / CenterNet Eq. 1)."""
-    pos_inds = gt.eq(1)
-    neg_inds = gt.lt(1)
+_RESNET_BUILDERS = {
+    18: (resnet18, ResNet18_Weights.DEFAULT, 512),
+    34: (resnet34, ResNet34_Weights.DEFAULT, 512),
+    50: (resnet50, ResNet50_Weights.DEFAULT, 2048),
+    101: (resnet101, ResNet101_Weights.DEFAULT, 2048),
+}
 
-    neg_weights = torch.pow(1.0 - gt[neg_inds], 4)
 
-    loss = torch.tensor(0.0, device=gt.device, dtype=gt.dtype)
-    for pred in preds:
-        pos_pred = pred[pos_inds].clamp(min=1e-6, max=1.0 - 1e-6)
-        neg_pred = pred[neg_inds].clamp(min=1e-6, max=1.0 - 1e-6)
+class CenterNetResNet(nn.Module):
+    """
+    CenterNet (Objects as Points, Zhou et al. 2019) ResNet encoder-decoder:
+      - Stride 32 ResNet backbone (18/34/50/101), optional ImageNet-1K pretrain
+      - 3x upsampling stages to stride 4:
+          * use_dcn=True  -> DCNv2 + Bilinear-init Deconv [256, 128, 64] (paper default)
+          * use_dcn=False -> Standard Deconv [256, 256, 256] (msra_resnet.py)
+      - Multi-task heads: 'hm' [C], 'wh' [2], 'reg' [2]
+    """
 
-        pos_loss = torch.log(pos_pred) * torch.pow(1.0 - pos_pred, 2)
-        neg_loss = torch.log((1.0 - neg_pred).clamp(min=1e-6)) * torch.pow(neg_pred, 2) * neg_weights
+    def __init__(
+        self,
+        num_layers: int = 50,
+        heads: Optional[Dict[str, int]] = None,
+        head_conv: int = 64,
+        pretrained_backbone: bool = True,
+        use_dcn: bool = True,
+    ):
+        super().__init__()
+        if num_layers not in _RESNET_BUILDERS:
+            raise ValueError(f"Unsupported ResNet depth: {num_layers}. Choose from {list(_RESNET_BUILDERS.keys())}.")
 
-        num_pos = pos_inds.float().sum()
-        pos_loss = pos_loss.sum()
-        neg_loss = neg_loss.sum()
+        if heads is None:
+            heads = {"hm": 20, "wh": 2, "reg": 2}
+        self.heads = heads
+        self.use_dcn = use_dcn
+        self.deconv_with_bias = False
 
-        if pos_pred.nelement() == 0:
-            loss = loss - neg_loss
+        builder, weights_enum, backbone_out_channels = _RESNET_BUILDERS[num_layers]
+        backbone = builder(weights=weights_enum if pretrained_backbone else None)
+
+        self.conv1 = backbone.conv1
+        self.bn1 = backbone.bn1
+        self.relu = backbone.relu
+        self.maxpool = backbone.maxpool
+        self.layer1 = backbone.layer1
+        self.layer2 = backbone.layer2
+        self.layer3 = backbone.layer3
+        self.layer4 = backbone.layer4
+
+        self.inplanes = backbone_out_channels
+        if self.use_dcn:
+            self.deconv_layers = self._make_deconv_layer_dcn(3, [256, 128, 64], [4, 4, 4])
+            feat_dim = 64
         else:
-            loss = loss - (pos_loss + neg_loss) / num_pos
-    return loss
+            self.deconv_layers = self._make_deconv_layer_std(3, [256, 256, 256], [4, 4, 4])
+            feat_dim = 256
+
+        for head in sorted(self.heads):
+            num_output = self.heads[head]
+            if head_conv > 0:
+                fc = nn.Sequential(
+                    nn.Conv2d(feat_dim, head_conv, kernel_size=3, padding=1, bias=True),
+                    nn.ReLU(inplace=True),
+                    nn.Conv2d(head_conv, num_output, kernel_size=1, stride=1, padding=0, bias=True),
+                )
+                if "hm" in head:
+                    fc[-1].bias.data.fill_(-2.19)
+                else:
+                    fill_fc_weights(fc)
+            else:
+                fc = nn.Conv2d(feat_dim, num_output, kernel_size=1, stride=1, padding=0, bias=True)
+                if "hm" in head:
+                    fc.bias.data.fill_(-2.19)
+                else:
+                    fill_fc_weights(fc)
+            self.__setattr__(head, fc)
+
+    @staticmethod
+    def _get_deconv_cfg(deconv_kernel: int) -> Tuple[int, int, int]:
+        if deconv_kernel == 4:
+            return 4, 1, 0
+        elif deconv_kernel == 3:
+            return 3, 1, 1
+        elif deconv_kernel == 2:
+            return 2, 0, 0
+        raise ValueError(f"Unsupported deconv kernel size: {deconv_kernel}")
+
+    def _make_deconv_layer_dcn(self, num_layers: int, num_filters: List[int], num_kernels: List[int]) -> nn.Sequential:
+        layers = []
+        for i in range(num_layers):
+            kernel, padding, output_padding = self._get_deconv_cfg(num_kernels[i])
+            planes = num_filters[i]
+            fc = ModulatedDeformConv2d(
+                self.inplanes, planes, kernel_size=3, stride=1, padding=1, dilation=1, deformable_groups=1
+            )
+            up = nn.ConvTranspose2d(
+                in_channels=planes,
+                out_channels=planes,
+                kernel_size=kernel,
+                stride=2,
+                padding=padding,
+                output_padding=output_padding,
+                bias=self.deconv_with_bias,
+            )
+            fill_up_weights(up)
+
+            bn1 = nn.BatchNorm2d(planes, momentum=BN_MOMENTUM)
+            nn.init.constant_(bn1.weight, 1)
+            nn.init.constant_(bn1.bias, 0)
+            bn2 = nn.BatchNorm2d(planes, momentum=BN_MOMENTUM)
+            nn.init.constant_(bn2.weight, 1)
+            nn.init.constant_(bn2.bias, 0)
+
+            layers.extend([fc, bn1, nn.ReLU(inplace=True), up, bn2, nn.ReLU(inplace=True)])
+            self.inplanes = planes
+        return nn.Sequential(*layers)
+
+    def _make_deconv_layer_std(self, num_layers: int, num_filters: List[int], num_kernels: List[int]) -> nn.Sequential:
+        layers = []
+        for i in range(num_layers):
+            kernel, padding, output_padding = self._get_deconv_cfg(num_kernels[i])
+            planes = num_filters[i]
+            up = nn.ConvTranspose2d(
+                in_channels=self.inplanes,
+                out_channels=planes,
+                kernel_size=kernel,
+                stride=2,
+                padding=padding,
+                output_padding=output_padding,
+                bias=self.deconv_with_bias,
+            )
+            nn.init.normal_(up.weight, std=0.001)
+            bn = nn.BatchNorm2d(planes, momentum=BN_MOMENTUM)
+            nn.init.constant_(bn.weight, 1)
+            nn.init.constant_(bn.bias, 0)
+            layers.extend([up, bn, nn.ReLU(inplace=True)])
+            self.inplanes = planes
+        return nn.Sequential(*layers)
+
+    def forward(self, x: Tensor) -> Dict[str, Tensor]:
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = self.maxpool(x)
+
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+
+        x = self.deconv_layers(x)
+        return {head: self.__getattr__(head)(x) for head in self.heads}
 
 
-def _ae_loss(tag0: Tensor, tag1: Tensor, mask: Tensor) -> Tuple[Tensor, Tensor]:
-    """
-    Associative Embedding Push/Pull Loss (CornerNet Eq. 4-5 / Newell et al. NeurIPS 2017).
-    Supports arbitrary embedding dimension D (1D scalar or D-dimensional vectors).
-    """
-    if tag0.dim() == 2:
-        tag0 = tag0.unsqueeze(-1)
-    if tag1.dim() == 2:
-        tag1 = tag1.unsqueeze(-1)
-
-    num = mask.sum(dim=1, keepdim=True).float()  # [B, 1]
-    tag_mean = (tag0 + tag1) / 2.0  # [B, N, D]
-
-    tag0_diff = torch.sum(torch.pow(tag0 - tag_mean, 2), dim=-1) / (num + 1e-4)  # [B, N]
-    tag0_sum = tag0_diff[mask].sum()
-    tag1_diff = torch.sum(torch.pow(tag1 - tag_mean, 2), dim=-1) / (num + 1e-4)  # [B, N]
-    tag1_sum = tag1_diff[mask].sum()
-    pull = tag0_sum + tag1_sum
-
-    mask_pair = mask.unsqueeze(1) & mask.unsqueeze(2)  # [B, N, N]
-    num_exp = num.unsqueeze(2)  # [B, 1, 1]
-    num2 = (num_exp - 1) * num_exp
-
-    diff = tag_mean.unsqueeze(1) - tag_mean.unsqueeze(2)  # [B, N, N, D]
-    dist_l2 = torch.linalg.vector_norm(diff, dim=-1)  # [B, N, N]
-    dist = 1.0 - dist_l2
-    dist = F.relu(dist, inplace=False)
-    dist = dist - 1.0 / (num_exp + 1e-4)
-    dist = dist / (num2 + 1e-4)
-    push = dist[mask_pair].sum()
-    return pull, push
-
-
-def _regr_loss(regr: Tensor, gt_regr: Tensor, mask: Tensor) -> Tensor:
-    """Smooth L1 Offset Loss (CornerNet Eq. 3)."""
-    num = mask.float().sum()
-    mask_exp = mask.unsqueeze(2).expand_as(gt_regr)
-
-    regr_sel = regr[mask_exp]
-    gt_regr_sel = gt_regr[mask_exp]
-
-    loss = F.smooth_l1_loss(regr_sel, gt_regr_sel, reduction="sum")
-    return loss / (num + 1e-4)
-
+# ==============================================================================
+# 3. Official Tensor & Target Helpers (utils.py / image.py exact ports)
+# ==============================================================================
 
 def _gather_feat(feat: Tensor, ind: Tensor, mask: Optional[Tensor] = None) -> Tensor:
     dim = feat.size(2)
@@ -415,106 +281,22 @@ def _gather_feat(feat: Tensor, ind: Tensor, mask: Optional[Tensor] = None) -> Te
     feat = feat.gather(1, ind)
     if mask is not None:
         mask = mask.unsqueeze(2).expand_as(feat)
-        feat = feat[mask].view(-1, dim)
+        feat = feat[mask]
+        feat = feat.view(-1, dim)
     return feat
 
 
-def _tranpose_and_gather_feat(feat: Tensor, ind: Tensor) -> Tensor:
+def _transpose_and_gather_feat(feat: Tensor, ind: Tensor) -> Tensor:
     feat = feat.permute(0, 2, 3, 1).contiguous()
     feat = feat.view(feat.size(0), -1, feat.size(3))
-    return _gather_feat(feat, ind)
+    feat = _gather_feat(feat, ind)
+    return feat
 
-
-class CenterNetLoss(nn.Module):
-    def __init__(self, pull_weight: float = 0.1, push_weight: float = 0.1, regr_weight: float = 1.0):
-        super().__init__()
-        self.pull_weight = pull_weight
-        self.push_weight = push_weight
-        self.regr_weight = regr_weight
-
-    def forward(
-        self,
-        tl_heat: Tensor,
-        br_heat: Tensor,
-        ct_heat: Tensor,
-        tl_tag: Tensor,
-        br_tag: Tensor,
-        tl_regr: Tensor,
-        br_regr: Tensor,
-        ct_regr: Tensor,
-        tl_inds: Tensor,
-        br_inds: Tensor,
-        ct_inds: Tensor,
-        gt_tl_heat: Tensor,
-        gt_br_heat: Tensor,
-        gt_ct_heat: Tensor,
-        gt_mask: Tensor,
-        gt_tl_regr: Tensor,
-        gt_br_regr: Tensor,
-        gt_ct_regr: Tensor,
-    ) -> Dict[str, Tensor]:
-        # Cast predicted and ground-truth tensors to float32 for numerical stability (prevents fp16 log underflow)
-        tl_heat = tl_heat.float()
-        br_heat = br_heat.float()
-        ct_heat = ct_heat.float()
-        tl_tag = tl_tag.float()
-        br_tag = br_tag.float()
-        tl_regr = tl_regr.float()
-        br_regr = br_regr.float()
-        ct_regr = ct_regr.float()
-
-        gt_tl_heat = gt_tl_heat.float()
-        gt_br_heat = gt_br_heat.float()
-        gt_ct_heat = gt_ct_heat.float()
-        gt_tl_regr = gt_tl_regr.float()
-        gt_br_regr = gt_br_regr.float()
-        gt_ct_regr = gt_ct_regr.float()
-
-        # Gather predicted tags and regrs at ground truth keypoint positions
-        tl_tag_g = _tranpose_and_gather_feat(tl_tag, tl_inds)
-        br_tag_g = _tranpose_and_gather_feat(br_tag, br_inds)
-
-        tl_regr_g = _tranpose_and_gather_feat(tl_regr, tl_inds)
-        br_regr_g = _tranpose_and_gather_feat(br_regr, br_inds)
-        ct_regr_g = _tranpose_and_gather_feat(ct_regr, ct_inds)
-
-        # Clamped sigmoids for focal loss stability in float32
-        tl_heat_sig = torch.sigmoid(tl_heat).clamp(min=1e-6, max=1.0 - 1e-6)
-        br_heat_sig = torch.sigmoid(br_heat).clamp(min=1e-6, max=1.0 - 1e-6)
-        ct_heat_sig = torch.sigmoid(ct_heat).clamp(min=1e-6, max=1.0 - 1e-6)
-
-        # 1. Focal loss
-        focal_tl = _neg_loss([tl_heat_sig], gt_tl_heat)
-        focal_br = _neg_loss([br_heat_sig], gt_br_heat)
-        focal_ct = _neg_loss([ct_heat_sig], gt_ct_heat)
-        focal_loss = focal_tl + focal_br + focal_ct
-
-        # 2. Tag push/pull loss
-        pull, push = _ae_loss(tl_tag_g, br_tag_g, gt_mask)
-        pull_loss = self.pull_weight * pull
-        push_loss = self.push_weight * push
-
-        # 3. Offset regression loss
-        regr_tl = _regr_loss(tl_regr_g, gt_tl_regr, gt_mask)
-        regr_br = _regr_loss(br_regr_g, gt_br_regr, gt_mask)
-        regr_ct = _regr_loss(ct_regr_g, gt_ct_regr, gt_mask)
-        regr_loss = self.regr_weight * (regr_tl + regr_br + regr_ct)
-
-        total_loss = focal_loss + pull_loss + push_loss + regr_loss
-        return {
-            "loss_focal": focal_loss,
-            "loss_pull": pull_loss,
-            "loss_push": push_loss,
-            "loss_regr": regr_loss,
-        }
-
-
-# ==============================================================================
-# 7. Target Generation (Gaussian Heatmaps, Offsets, Tags)
-# ==============================================================================
 
 def gaussian_radius(det_size: Tuple[float, float], min_overlap: float = 0.7) -> float:
+    """CornerNet / CenterNet size-adaptive Gaussian radius."""
     height, width = det_size
+
     a1 = 1
     b1 = height + width
     c1 = width * height * (1 - min_overlap) / (1 + min_overlap)
@@ -532,35 +314,112 @@ def gaussian_radius(det_size: Tuple[float, float], min_overlap: float = 0.7) -> 
     c3 = (min_overlap - 1) * width * height
     sq3 = math.sqrt(max(0.0, b3**2 - 4 * a3 * c3))
     r3 = (b3 + sq3) / 2
+
     return min(r1, r2, r3)
 
 
-def draw_gaussian_2d(heatmap: Tensor, center: Tuple[int, int], radius: int, k: float = 1.0, delte: float = 6.0):
-    """Draws 2D Gaussian bump onto heatmap in-place."""
+def gaussian2D(shape: Tuple[int, int], sigma: float = 1.0, device=None, dtype=torch.float32) -> Tensor:
+    m, n = [(ss - 1.0) / 2.0 for ss in shape]
+    y = torch.arange(-m, m + 1, device=device, dtype=dtype).unsqueeze(1)
+    x = torch.arange(-n, n + 1, device=device, dtype=dtype).unsqueeze(0)
+    h = torch.exp(-(x * x + y * y) / (2.0 * sigma * sigma))
+    h[h < torch.finfo(h.dtype).eps * h.max()] = 0
+    return h
+
+
+def draw_umich_gaussian(heatmap: Tensor, center: Tuple[int, int], radius: int, k: float = 1.0) -> Tensor:
+    """Draws 2D Gaussian bump onto heatmap in-place (exact port of draw_umich_gaussian)."""
     diameter = 2 * radius + 1
-    sigma = diameter / delte
-    x, y = center
-    height, width = heatmap.shape
+    gaussian = gaussian2D((diameter, diameter), sigma=diameter / 6.0, device=heatmap.device, dtype=heatmap.dtype)
 
-    left = min(x, radius)
-    right = min(width - x, radius + 1)
-    top = min(y, radius)
-    bottom = min(height - y, radius + 1)
+    x, y = int(center[0]), int(center[1])
+    height, width = heatmap.shape[0:2]
 
-    if left + right <= 0 or top + bottom <= 0:
-        return
-
-    # Generate gaussian kernel
-    y_coords = torch.arange(-top, bottom, device=heatmap.device, dtype=heatmap.dtype).unsqueeze(1)
-    x_coords = torch.arange(-left, right, device=heatmap.device, dtype=heatmap.dtype).unsqueeze(0)
-    g = torch.exp(-(x_coords**2 + y_coords**2) / (2 * sigma * sigma))
+    left, right = min(x, radius), min(width - x, radius + 1)
+    top, bottom = min(y, radius), min(height - y, radius + 1)
 
     masked_heatmap = heatmap[y - top : y + bottom, x - left : x + right]
-    torch.maximum(masked_heatmap, g * k, out=masked_heatmap)
+    masked_gaussian = gaussian[radius - top : radius + bottom, radius - left : radius + right]
+    if min(masked_gaussian.shape) > 0 and min(masked_heatmap.shape) > 0:
+        torch.maximum(masked_heatmap, masked_gaussian * k, out=masked_heatmap)
+    return heatmap
 
 
 # ==============================================================================
-# 8. Detection Decoder with Scale-Aware Central Region Verification
+# 4. Official Loss Functions (losses.py / ctdet.py exact ports)
+# ==============================================================================
+
+def _neg_loss(pred: Tensor, gt: Tensor) -> Tensor:
+    """Modified penalty-reduced focal loss (Zhou et al. Eq. 1 / losses.py)."""
+    pos_inds = gt.eq(1).float()
+    neg_inds = gt.lt(1).float()
+
+    neg_weights = torch.pow(1.0 - gt, 4)
+
+    pos_loss = torch.log(pred) * torch.pow(1.0 - pred, 2) * pos_inds
+    neg_loss = torch.log(1.0 - pred) * torch.pow(pred, 2) * neg_weights * neg_inds
+
+    num_pos = pos_inds.float().sum()
+    pos_sum = pos_loss.sum()
+    neg_sum = neg_loss.sum()
+
+    if num_pos == 0:
+        return -neg_sum
+    return -(pos_sum + neg_sum) / num_pos
+
+
+class RegL1Loss(nn.Module):
+    """Sparse center-indexed L1 regression loss (losses.py RegL1Loss)."""
+
+    def forward(self, output: Tensor, mask: Tensor, ind: Tensor, target: Tensor) -> Tensor:
+        pred = _transpose_and_gather_feat(output, ind)
+        mask_exp = mask.unsqueeze(2).expand_as(pred).float()
+        loss = F.l1_loss(pred * mask_exp, target * mask_exp, reduction="sum")
+        loss = loss / (mask_exp.sum() + 1e-4)
+        return loss
+
+
+class CenterNetLoss(nn.Module):
+    """Official CenterNet ctdet objective: 1.0 * hm_loss + 0.1 * wh_loss + 1.0 * off_loss."""
+
+    def __init__(self, hm_weight: float = 1.0, wh_weight: float = 0.1, off_weight: float = 1.0):
+        super().__init__()
+        self.hm_weight = hm_weight
+        self.wh_weight = wh_weight
+        self.off_weight = off_weight
+        self.reg_l1 = RegL1Loss()
+
+    def forward(
+        self,
+        outputs: Dict[str, Tensor],
+        gt_hm: Tensor,
+        gt_wh: Tensor,
+        gt_reg: Tensor,
+        ind: Tensor,
+        reg_mask: Tensor,
+    ) -> Dict[str, Tensor]:
+        device_type = outputs["hm"].device.type
+        # Run focal and L1 losses strictly in float32 for AMP stability
+        with torch.amp.autocast(device_type=device_type, enabled=False):
+            hm_logits = outputs["hm"].float()
+            wh_pred = outputs["wh"].float()
+            reg_pred = outputs["reg"].float()
+
+            hm_prob = torch.clamp(torch.sigmoid(hm_logits), min=1e-4, max=1.0 - 1e-4)
+
+            hm_loss = _neg_loss(hm_prob, gt_hm.float())
+            wh_loss = self.reg_l1(wh_pred, reg_mask, ind, gt_wh.float())
+            off_loss = self.reg_l1(reg_pred, reg_mask, ind, gt_reg.float())
+
+        return {
+            "hm_loss": self.hm_weight * hm_loss,
+            "wh_loss": self.wh_weight * wh_loss,
+            "off_loss": self.off_weight * off_loss,
+        }
+
+
+# ==============================================================================
+# 5. Official Decoder (decode.py exact port)
 # ==============================================================================
 
 def _nms(heat: Tensor, kernel: int = 3) -> Tensor:
@@ -570,415 +429,221 @@ def _nms(heat: Tensor, kernel: int = 3) -> Tensor:
     return heat * keep
 
 
-def _topk(scores: Tensor, K: int = 70) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+def _topk(scores: Tensor, K: int = 100) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
     batch, cat, height, width = scores.size()
-    topk_scores, topk_inds = torch.topk(scores.view(batch, -1), K)
-    topk_clses = (topk_inds // (height * width)).int()
-    topk_inds = topk_inds % (height * width)
-    topk_ys = (topk_inds // width).float()
-    topk_xs = (topk_inds % width).float()
-    return topk_scores, topk_inds, topk_clses, topk_ys, topk_xs
+    hw = height * width
+    k_chan = min(K, hw)
+
+    topk_scores, topk_inds = torch.topk(scores.view(batch, cat, -1), k_chan)
+    topk_inds = topk_inds % hw
+    topk_ys = (topk_inds // width).int().float()
+    topk_xs = (topk_inds % width).int().float()
+
+    k_all = min(K, cat * k_chan)
+    topk_score, topk_ind = torch.topk(topk_scores.view(batch, -1), k_all)
+    topk_clses = (topk_ind // k_chan).int()
+    topk_inds = _gather_feat(topk_inds.view(batch, -1, 1), topk_ind).view(batch, k_all)
+    topk_ys = _gather_feat(topk_ys.view(batch, -1, 1), topk_ind).view(batch, k_all)
+    topk_xs = _gather_feat(topk_xs.view(batch, -1, 1), topk_ind).view(batch, k_all)
+
+    return topk_score, topk_inds, topk_clses, topk_ys, topk_xs
 
 
-def decode_centernet(
-    tl_heat: Tensor,
-    br_heat: Tensor,
-    tl_tag: Tensor,
-    br_tag: Tensor,
-    tl_regr: Tensor,
-    br_regr: Tensor,
-    ct_heat: Tensor,
-    ct_regr: Tensor,
-    K: int = 70,
-    kernel: int = 3,
-    ae_threshold: float = 0.5,
-    num_dets: int = 100,
-) -> Tuple[Tensor, Tensor]:
+def ctdet_decode(
+    heat: Tensor,
+    wh: Tensor,
+    reg: Optional[Tensor] = None,
+    cat_spec_wh: bool = False,
+    K: int = 100,
+) -> Tensor:
     """
-    Decodes raw network heads into corner bounding boxes and center keypoints.
-    Returns:
-        detections: [B, num_dets, 8] -> [x1, y1, x2, y2, score, tl_score, br_score, cls]
-        center: [B, K, 4] -> [x, y, cls, score]
+    Decodes CenterNet heatmaps, offsets, and sizes into [B, K, 6] detections:
+    [x1, y1, x2, y2, score, cls] on feature-map coordinates.
     """
-    batch, cat, height, width = tl_heat.size()
+    batch, cat, height, width = heat.size()
+    heat = _nms(heat, kernel=3)
 
-    tl_heat = torch.sigmoid(tl_heat)
-    br_heat = torch.sigmoid(br_heat)
-    ct_heat = torch.sigmoid(ct_heat)
+    scores, inds, clses, ys, xs = _topk(heat, K=K)
+    k_eff = scores.size(1)
 
-    # 3x3 NMS peak selection
-    tl_heat = _nms(tl_heat, kernel=kernel)
-    br_heat = _nms(br_heat, kernel=kernel)
-    ct_heat = _nms(ct_heat, kernel=kernel)
+    if reg is not None:
+        reg_g = _transpose_and_gather_feat(reg, inds).view(batch, k_eff, 2)
+        xs = xs.view(batch, k_eff, 1) + reg_g[:, :, 0:1]
+        ys = ys.view(batch, k_eff, 1) + reg_g[:, :, 1:2]
+    else:
+        xs = xs.view(batch, k_eff, 1) + 0.5
+        ys = ys.view(batch, k_eff, 1) + 0.5
 
-    tl_scores, tl_inds, tl_clses, tl_ys, tl_xs = _topk(tl_heat, K=K)
-    br_scores, br_inds, br_clses, br_ys, br_xs = _topk(br_heat, K=K)
-    ct_scores, ct_inds, ct_clses, ct_ys, ct_xs = _topk(ct_heat, K=K)
+    wh_g = _transpose_and_gather_feat(wh, inds)
+    if cat_spec_wh:
+        wh_g = wh_g.view(batch, k_eff, cat, 2)
+        clses_ind = clses.view(batch, k_eff, 1, 1).expand(batch, k_eff, 1, 2).long()
+        wh_g = wh_g.gather(2, clses_ind).view(batch, k_eff, 2)
+    else:
+        wh_g = wh_g.view(batch, k_eff, 2)
 
-    tl_ys = tl_ys.view(batch, K, 1).expand(batch, K, K)
-    tl_xs = tl_xs.view(batch, K, 1).expand(batch, K, K)
-    br_ys = br_ys.view(batch, 1, K).expand(batch, K, K)
-    br_xs = br_xs.view(batch, 1, K).expand(batch, K, K)
-    ct_ys = ct_ys.view(batch, 1, K).expand(batch, K, K)
-    ct_xs = ct_xs.view(batch, 1, K).expand(batch, K, K)
-
-    # Apply sub-pixel regression offsets
-    tl_regr_g = _tranpose_and_gather_feat(tl_regr, tl_inds).view(batch, K, 1, 2)
-    br_regr_g = _tranpose_and_gather_feat(br_regr, br_inds).view(batch, 1, K, 2)
-    ct_regr_g = _tranpose_and_gather_feat(ct_regr, ct_inds).view(batch, 1, K, 2)
-
-    tl_xs = tl_xs + tl_regr_g[..., 0]
-    tl_ys = tl_ys + tl_regr_g[..., 1]
-    br_xs = br_xs + br_regr_g[..., 0]
-    br_ys = br_ys + br_regr_g[..., 1]
-    ct_xs = ct_xs + ct_regr_g[..., 0]
-    ct_ys = ct_ys + ct_regr_g[..., 1]
-
-    bboxes = torch.stack((tl_xs, tl_ys, br_xs, br_ys), dim=3)
-
-    # Corner associative embedding distance (supports arbitrary D-dimensional tags)
-    tl_tag_g = _tranpose_and_gather_feat(tl_tag, tl_inds).view(batch, K, 1, -1)
-    br_tag_g = _tranpose_and_gather_feat(br_tag, br_inds).view(batch, 1, K, -1)
-    dists = torch.linalg.vector_norm(tl_tag_g - br_tag_g, dim=-1)
-
-    tl_scores_exp = tl_scores.view(batch, K, 1).expand(batch, K, K)
-    br_scores_exp = br_scores.view(batch, 1, K).expand(batch, K, K)
-    scores = (tl_scores_exp + br_scores_exp) / 2.0
-
-    # Reject mismatched class, distance > threshold, or inverted boxes
-    tl_clses_exp = tl_clses.view(batch, K, 1).expand(batch, K, K)
-    br_clses_exp = br_clses.view(batch, 1, K).expand(batch, K, K)
-    cls_inds = tl_clses_exp != br_clses_exp
-    dist_inds = dists > ae_threshold
-    width_inds = br_xs < tl_xs
-    height_inds = br_ys < tl_ys
-
-    scores[cls_inds] = -1.0
-    scores[dist_inds] = -1.0
-    scores[width_inds] = -1.0
-    scores[height_inds] = -1.0
-
-    scores = scores.view(batch, -1)
-    scores, inds = torch.topk(scores, min(num_dets, scores.size(1)))
-    scores = scores.unsqueeze(2)
-
-    bboxes = bboxes.view(batch, -1, 4)
-    bboxes = _gather_feat(bboxes, inds)
-
-    clses = tl_clses_exp.contiguous().view(batch, -1, 1)
-    clses = _gather_feat(clses, inds).float()
-
-    tl_scores_sel = tl_scores_exp.contiguous().view(batch, -1, 1)
-    tl_scores_sel = _gather_feat(tl_scores_sel, inds).float()
-    br_scores_sel = br_scores_exp.contiguous().view(batch, -1, 1)
-    br_scores_sel = _gather_feat(br_scores_sel, inds).float()
-
-    ct_xs_single = ct_xs[:, 0, :]
-    ct_ys_single = ct_ys[:, 0, :]
-
-    centers = torch.cat(
+    clses = clses.view(batch, k_eff, 1).float()
+    scores = scores.view(batch, k_eff, 1)
+    bboxes = torch.cat(
         [
-            ct_xs_single.unsqueeze(2),
-            ct_ys_single.unsqueeze(2),
-            ct_clses.float().unsqueeze(2),
-            ct_scores.unsqueeze(2),
+            xs - wh_g[..., 0:1] / 2.0,
+            ys - wh_g[..., 1:2] / 2.0,
+            xs + wh_g[..., 0:1] / 2.0,
+            ys + wh_g[..., 1:2] / 2.0,
         ],
         dim=2,
     )
-    detections = torch.cat([bboxes, scores, tl_scores_sel, br_scores_sel, clses], dim=2)
-    return detections, centers
-
-
-def apply_scale_aware_central_region(
-    detections: Tensor, center_points: Tensor
-) -> Tensor:
-    """
-    Applies Duan et al. (2019) Scale-Aware Central Region Verification:
-    - Small boxes (area <= 22500): n = 3
-    - Large boxes (area > 22500): n = 5
-    - If center of same category falls in central region:
-        S = (S_tl + S_br + S_ct) / 3 = (2 * S_corner + S_ct) / 3
-      Else: box is discarded (score = -1).
-    """
-    valid_mask = detections[:, 4] > -1.0
-    valid_dets = detections[valid_mask].clone()
-    if len(valid_dets) == 0:
-        return torch.zeros((0, 8), device=detections.device, dtype=detections.dtype)
-
-    bw = valid_dets[:, 2] - valid_dets[:, 0]
-    bh = valid_dets[:, 3] - valid_dets[:, 1]
-    s_mask = (bw * bh) <= 22500.0
-    l_mask = ~s_mask
-
-    s_dets = valid_dets[s_mask]
-    l_dets = valid_dets[l_mask]
-
-    # Process small detections (n=3)
-    if len(s_dets) > 0 and len(center_points) > 0:
-        s_lx = (2.0 * s_dets[:, 0] + s_dets[:, 2]) / 3.0
-        s_rx = (s_dets[:, 0] + 2.0 * s_dets[:, 2]) / 3.0
-        s_ty = (2.0 * s_dets[:, 1] + s_dets[:, 3]) / 3.0
-        s_by = (s_dets[:, 1] + 2.0 * s_dets[:, 3]) / 3.0
-
-        s_orig_score = s_dets[:, 4].clone()
-        s_dets[:, 4] = -1.0
-
-        cx = center_points[:, 0:1]
-        cy = center_points[:, 1:2]
-        c_cls = center_points[:, 2:3]
-
-        in_box = (
-            (cx > s_lx.unsqueeze(0))
-            & (cx < s_rx.unsqueeze(0))
-            & (cy > s_ty.unsqueeze(0))
-            & (cy < s_by.unsqueeze(0))
-            & (c_cls == s_dets[:, 7].unsqueeze(0))
-        )
-        has_match = in_box.any(dim=0)
-        if has_match.any():
-            best_idx = in_box[:, has_match].long().argmax(dim=0)
-            c_score_matched = center_points[best_idx, 3]
-            s_dets[has_match, 4] = (s_orig_score[has_match] * 2.0 + c_score_matched) / 3.0
-    elif len(s_dets) > 0:
-        s_dets[:, 4] = -1.0
-
-    # Process large detections (n=5)
-    if len(l_dets) > 0 and len(center_points) > 0:
-        l_lx = (3.0 * l_dets[:, 0] + 2.0 * l_dets[:, 2]) / 5.0
-        l_rx = (2.0 * l_dets[:, 0] + 3.0 * l_dets[:, 2]) / 5.0
-        l_ty = (3.0 * l_dets[:, 1] + 2.0 * l_dets[:, 3]) / 5.0
-        l_by = (2.0 * l_dets[:, 1] + 3.0 * l_dets[:, 3]) / 5.0
-
-        l_orig_score = l_dets[:, 4].clone()
-        l_dets[:, 4] = -1.0
-
-        cx = center_points[:, 0:1]
-        cy = center_points[:, 1:2]
-        c_cls = center_points[:, 2:3]
-
-        in_box = (
-            (cx > l_lx.unsqueeze(0))
-            & (cx < l_rx.unsqueeze(0))
-            & (cy > l_ty.unsqueeze(0))
-            & (cy < l_by.unsqueeze(0))
-            & (c_cls == l_dets[:, 7].unsqueeze(0))
-        )
-        has_match = in_box.any(dim=0)
-        if has_match.any():
-            best_idx = in_box[:, has_match].long().argmax(dim=0)
-            c_score_matched = center_points[best_idx, 3]
-            l_dets[has_match, 4] = (l_orig_score[has_match] * 2.0 + c_score_matched) / 3.0
-    elif len(l_dets) > 0:
-        l_dets[:, 4] = -1.0
-
-    kept = torch.cat([l_dets, s_dets], dim=0)
-    kept = kept[kept[:, 4] > -1.0]
-    if len(kept) > 0:
-        kept = kept[torch.argsort(-kept[:, 4])]
-    return kept
+    return torch.cat([bboxes, scores, clses], dim=2)
 
 
 # ==============================================================================
-# 9. CenterNet Detection Model Wrapper (Torchvision Detection Compatible)
+# 6. Detector Wrapper (Standard Torchvision Detection API)
 # ==============================================================================
 
 class CenterNetDetector(nn.Module):
     """
-    CenterNet Keypoint Triplets Object Detector (Duan et al., ICCV 2019).
-    Fully compatible with the codebase training and evaluation protocols:
-      - Training: model(images, targets) -> loss_dict
-      - Evaluation: model(images) -> list[dict['boxes', 'scores', 'labels']]
+    Torchvision-compatible wrapper for CenterNet (Objects as Points):
+      - Training: forward(images, targets) -> dict of losses
+      - Eval:     forward(images) -> List[{'boxes', 'scores', 'labels'}] in original resolution
     """
+
     def __init__(
         self,
         num_classes: int = 20,
-        class_agnostic: bool = False,
-        ae_dim: Optional[int] = None,
+        num_layers: int = 50,
+        pretrained_backbone: bool = True,
+        use_dcn: bool = True,
         input_size: Tuple[int, int] = (512, 512),
-        top_k: int = 70,
-        ae_threshold: float = 0.5,
-        nms_kernel: int = 3,
-        nms_iou_threshold: float = 0.5,
-        max_detections: int = 100,
-        score_thresh: float = 0.05,
+        head_conv: int = 64,
+        top_k: int = 100,
+        score_thresh: float = 0.0,
+        flip_test: bool = False,
+        hm_weight: float = 1.0,
+        wh_weight: float = 0.1,
+        off_weight: float = 1.0,
     ):
         super().__init__()
-        self.class_agnostic = class_agnostic
-        if self.class_agnostic:
-            self.num_classes = 1
-            self.ae_dim = 4 if ae_dim is None else ae_dim
-        else:
-            self.num_classes = num_classes
-            self.ae_dim = 1 if ae_dim is None else ae_dim
-
-        self.input_size = input_size  # (H, W) = (512, 512)
-        self.output_size = (input_size[0] // 4, input_size[1] // 4)  # (128, 128)
+        self.num_classes = num_classes
+        self.num_layers = num_layers
+        self.use_dcn = use_dcn
+        self.input_size = input_size
         self.stride = 4
-
+        self.output_size = (input_size[0] // self.stride, input_size[1] // self.stride)
         self.top_k = top_k
-        self.ae_threshold = ae_threshold
-        self.nms_kernel = nms_kernel
-        self.nms_iou_threshold = nms_iou_threshold
-        self.max_detections = max_detections
         self.score_thresh = score_thresh
+        self.flip_test = flip_test
 
-        # Model backbone and heads
-        self.net = CenterNet52Backbone(num_classes=self.num_classes, ae_dim=self.ae_dim)
-        self.loss_fn = CenterNetLoss(pull_weight=0.1, push_weight=0.1, regr_weight=1.0)
+        self.net = CenterNetResNet(
+            num_layers=num_layers,
+            heads={"hm": num_classes, "wh": 2, "reg": 2},
+            head_conv=head_conv,
+            pretrained_backbone=pretrained_backbone,
+            use_dcn=use_dcn,
+        )
+        self.loss_fn = CenterNetLoss(
+            hm_weight=hm_weight,
+            wh_weight=wh_weight,
+            off_weight=off_weight,
+        )
 
-        # CenterNet RGB image normalization buffers (converted from official BGR values)
-        # BGR: [0.40789654, 0.44719302, 0.47026115], std: [0.28863828, 0.27408164, 0.27809834]
-        # RGB: [0.47026115, 0.44719302, 0.40789654], std: [0.27809834, 0.27408164, 0.28863828]
+        # Official ImageNet / Pascal VOC RGB normalization stats (pascal.py)
         self.register_buffer(
-            "pixel_mean", torch.tensor([0.47026115, 0.44719302, 0.40789654]).view(1, 3, 1, 1)
+            "pixel_mean", torch.tensor([0.485, 0.456, 0.406], dtype=torch.float32).view(1, 3, 1, 1)
         )
         self.register_buffer(
-            "pixel_std", torch.tensor([0.27809834, 0.27408164, 0.28863828]).view(1, 3, 1, 1)
+            "pixel_std", torch.tensor([0.229, 0.224, 0.225], dtype=torch.float32).view(1, 3, 1, 1)
         )
 
-    def _letterbox_image(
-        self, img: Tensor
-    ) -> Tuple[Tensor, float, float, float, int, int]:
-        """
-        Pads and resizes image into fixed input_size (512, 512) preserving aspect ratio.
-        Returns:
-            padded_img, scale, pad_x, pad_y, orig_w, orig_h
-        """
-        _, orig_h, orig_w = img.shape
-        target_h, target_w = self.input_size
+    def _letterbox_image(self, img: Tensor) -> Tuple[Tensor, float, int, int, int, int]:
+        _, h, w = img.shape
+        in_h, in_w = self.input_size
 
-        scale = min(target_w / orig_w, target_h / orig_h)
-        new_w = min(target_w, int(round(orig_w * scale)))
-        new_h = min(target_h, int(round(orig_h * scale)))
+        if h == in_h and w == in_w:
+            return img, 1.0, 0, 0, w, h
 
-        # Resize
+        s = max(h, w)
+        pad_left = (s - w) // 2
+        pad_right = s - w - pad_left
+        pad_top = (s - h) // 2
+        pad_bottom = s - h - pad_top
+
+        padded = F.pad(img, (pad_left, pad_right, pad_top, pad_bottom), value=0.0)
         resized = F.interpolate(
-            img.unsqueeze(0), size=(new_h, new_w), mode="bilinear", align_corners=False
+            padded.unsqueeze(0), size=(in_h, in_w), mode="bilinear", align_corners=False
         ).squeeze(0)
-
-        # Pad into (target_h, target_w)
-        pad_x = (target_w - new_w) / 2.0
-        pad_y = (target_h - new_h) / 2.0
-
-        pad_left = int(pad_x)
-        pad_right = target_w - new_w - pad_left
-        pad_top = int(pad_y)
-        pad_bottom = target_h - new_h - pad_top
-
-        padded = F.pad(resized, (pad_left, pad_right, pad_top, pad_bottom), value=0.0)
-        return padded, scale, float(pad_left), float(pad_top), orig_w, orig_h
+        scale = float(in_w) / float(s)
+        return resized, scale, pad_left, pad_top, w, h
 
     def _prepare_targets(
         self,
         targets: List[Dict[str, Tensor]],
         scales: List[float],
-        pad_xs: List[float],
-        pad_ys: List[float],
+        pad_xs: List[int],
+        pad_ys: List[int],
         device: torch.device,
-    ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
-        """
-        Generates ground truth heatmaps, tags, and offsets on feature map resolution (128x128).
-        """
-        B = len(targets)
-        C = self.num_classes
+    ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+        batch_size = len(targets)
         out_h, out_w = self.output_size
-        max_tag_len = max(1, max(len(t["boxes"]) for t in targets))
+        max_objs = max(1, max((len(t["boxes"]) for t in targets), default=0))
 
-        gt_tl_heat = torch.zeros((B, C, out_h, out_w), device=device, dtype=torch.float32)
-        gt_br_heat = torch.zeros((B, C, out_h, out_w), device=device, dtype=torch.float32)
-        gt_ct_heat = torch.zeros((B, C, out_h, out_w), device=device, dtype=torch.float32)
+        gt_hm = torch.zeros((batch_size, self.num_classes, out_h, out_w), device=device, dtype=torch.float32)
+        gt_wh = torch.zeros((batch_size, max_objs, 2), device=device, dtype=torch.float32)
+        gt_reg = torch.zeros((batch_size, max_objs, 2), device=device, dtype=torch.float32)
+        ind = torch.zeros((batch_size, max_objs), device=device, dtype=torch.int64)
+        reg_mask = torch.zeros((batch_size, max_objs), device=device, dtype=torch.uint8)
 
-        gt_mask = torch.zeros((B, max_tag_len), device=device, dtype=torch.bool)
-        gt_tl_regr = torch.zeros((B, max_tag_len, 2), device=device, dtype=torch.float32)
-        gt_br_regr = torch.zeros((B, max_tag_len, 2), device=device, dtype=torch.float32)
-        gt_ct_regr = torch.zeros((B, max_tag_len, 2), device=device, dtype=torch.float32)
-
-        tl_inds = torch.zeros((B, max_tag_len), device=device, dtype=torch.long)
-        br_inds = torch.zeros((B, max_tag_len), device=device, dtype=torch.long)
-        ct_inds = torch.zeros((B, max_tag_len), device=device, dtype=torch.long)
-
-        for b_idx, (t, scale, px, py) in enumerate(zip(targets, scales, pad_xs, pad_ys)):
+        for b_idx, t in enumerate(targets):
             boxes = t["boxes"]
             labels = t["labels"]
-            num_boxes = len(boxes)
-            if num_boxes == 0:
+            num_objs = len(boxes)
+            if num_objs == 0:
                 continue
 
-            for k in range(num_boxes):
+            scale = scales[b_idx]
+            px = pad_xs[b_idx]
+            py = pad_ys[b_idx]
+
+            for k in range(num_objs):
                 x1, y1, x2, y2 = boxes[k].tolist()
-                lbl = int(labels[k].item())
-                # In class-agnostic mode, all objects map to category 0 (single objectness channel)
-                if self.class_agnostic or C == 1:
-                    cat = 0
+                fx1 = max(0.0, min(float(out_w - 1), ((x1 + px) * scale) / self.stride))
+                fy1 = max(0.0, min(float(out_h - 1), ((y1 + py) * scale) / self.stride))
+                fx2 = max(0.0, min(float(out_w - 1), ((x2 + px) * scale) / self.stride))
+                fy2 = max(0.0, min(float(out_h - 1), ((y2 + py) * scale) / self.stride))
+
+                w_f = fx2 - fx1
+                h_f = fy2 - fy1
+                if h_f <= 0.0 or w_f <= 0.0:
+                    continue
+
+                if self.num_classes == 1:
+                    cls_id = 0
                 else:
-                    cat = lbl - 1 if lbl > 0 else 0
-                    if cat < 0 or cat >= C:
-                        continue
+                    cls_id = max(0, min(self.num_classes - 1, int(labels[k].item()) - 1))
 
-                # Transform to 512x512 padded canvas
-                x1 = x1 * scale + px
-                x2 = x2 * scale + px
-                y1 = y1 * scale + py
-                y2 = y2 * scale + py
+                radius = max(0, int(gaussian_radius((math.ceil(h_f), math.ceil(w_f)), min_overlap=0.7)))
+                ctx = (fx1 + fx2) / 2.0
+                cty = (fy1 + fy2) / 2.0
+                ctx_int = max(0, min(out_w - 1, int(ctx)))
+                cty_int = max(0, min(out_h - 1, int(cty)))
 
-                # Map to 128x128 feature map
-                fxtl = x1 / float(self.stride)
-                fytl = y1 / float(self.stride)
-                fxbr = x2 / float(self.stride)
-                fybr = y2 / float(self.stride)
-                fxct = (x1 + x2) / (2.0 * float(self.stride))
-                fyct = (y1 + y2) / (2.0 * float(self.stride))
+                draw_umich_gaussian(gt_hm[b_idx, cls_id], (ctx_int, cty_int), radius)
 
-                xtl = int(max(0, min(out_w - 1, fxtl)))
-                ytl = int(max(0, min(out_h - 1, fytl)))
-                xbr = int(max(0, min(out_w - 1, fxbr)))
-                ybr = int(max(0, min(out_h - 1, fybr)))
-                xct = int(max(0, min(out_w - 1, fxct)))
-                yct = int(max(0, min(out_h - 1, fyct)))
+                gt_wh[b_idx, k, 0] = w_f
+                gt_wh[b_idx, k, 1] = h_f
+                ind[b_idx, k] = cty_int * out_w + ctx_int
+                gt_reg[b_idx, k, 0] = ctx - ctx_int
+                gt_reg[b_idx, k, 1] = cty - cty_int
+                reg_mask[b_idx, k] = 1
 
-                box_w = max(1.0, fxbr - fxtl)
-                box_h = max(1.0, fybr - fytl)
-
-                radius = int(max(0, gaussian_radius((box_h, box_w), min_overlap=0.7)))
-
-                draw_gaussian_2d(gt_tl_heat[b_idx, cat], (xtl, ytl), radius, delte=6.0)
-                draw_gaussian_2d(gt_br_heat[b_idx, cat], (xbr, ybr), radius, delte=6.0)
-                draw_gaussian_2d(gt_ct_heat[b_idx, cat], (xct, yct), radius, delte=5.0)
-
-                gt_tl_regr[b_idx, k] = torch.tensor([fxtl - xtl, fytl - ytl], device=device)
-                gt_br_regr[b_idx, k] = torch.tensor([fxbr - xbr, fybr - ybr], device=device)
-                gt_ct_regr[b_idx, k] = torch.tensor([fxct - xct, fyct - yct], device=device)
-
-                tl_inds[b_idx, k] = ytl * out_w + xtl
-                br_inds[b_idx, k] = ybr * out_w + xbr
-                ct_inds[b_idx, k] = yct * out_w + xct
-
-                gt_mask[b_idx, k] = True
-
-        return (
-            gt_tl_heat,
-            gt_br_heat,
-            gt_ct_heat,
-            gt_mask,
-            gt_tl_regr,
-            gt_br_regr,
-            gt_ct_regr,
-            tl_inds,
-            br_inds,
-            ct_inds,
-        )
+        return gt_hm, gt_wh, gt_reg, ind, reg_mask
 
     def forward(
         self,
-        images: Union[Tensor, List[Tensor], Tuple[Tensor, ...]],
+        images: List[Tensor],
         targets: Optional[List[Dict[str, Tensor]]] = None,
     ) -> Union[Dict[str, Tensor], List[Dict[str, Tensor]]]:
-        if isinstance(images, (list, tuple)):
-            device = images[0].device
-        else:
-            device = images.device
+        device = images[0].device
 
-        # Letterbox and batch preparation
         batch_tensors = []
         scales = []
         pad_xs = []
@@ -994,191 +659,103 @@ class CenterNetDetector(nn.Module):
             orig_sizes.append((ow, oh))
 
         x = torch.stack(batch_tensors, dim=0).to(device)
-        # Normalize
         x = (x - self.pixel_mean) / self.pixel_std
 
-        # Network forward pass
-        (
-            tl_heat,
-            br_heat,
-            ct_heat,
-            tl_tag,
-            br_tag,
-            tl_regr,
-            br_regr,
-            ct_regr,
-        ) = self.net(x)
-
-        # ----------------------------------------------------
-        # Training Mode: compute loss
-        # ----------------------------------------------------
         if self.training and targets is not None:
-            (
-                gt_tl_heat,
-                gt_br_heat,
-                gt_ct_heat,
-                gt_mask,
-                gt_tl_regr,
-                gt_br_regr,
-                gt_ct_regr,
-                tl_inds,
-                br_inds,
-                ct_inds,
-            ) = self._prepare_targets(targets, scales, pad_xs, pad_ys, device)
-
-            loss_dict = self.loss_fn(
-                tl_heat=tl_heat,
-                br_heat=br_heat,
-                ct_heat=ct_heat,
-                tl_tag=tl_tag,
-                br_tag=br_tag,
-                tl_regr=tl_regr,
-                br_regr=br_regr,
-                ct_regr=ct_regr,
-                tl_inds=tl_inds,
-                br_inds=br_inds,
-                ct_inds=ct_inds,
-                gt_tl_heat=gt_tl_heat,
-                gt_br_heat=gt_br_heat,
-                gt_ct_heat=gt_ct_heat,
-                gt_mask=gt_mask,
-                gt_tl_regr=gt_tl_regr,
-                gt_br_regr=gt_br_regr,
-                gt_ct_regr=gt_ct_regr,
+            outputs = self.net(x)
+            gt_hm, gt_wh, gt_reg, ind, reg_mask = self._prepare_targets(
+                targets, scales, pad_xs, pad_ys, device
             )
-            return loss_dict
+            return self.loss_fn(outputs, gt_hm, gt_wh, gt_reg, ind, reg_mask)
 
-        # ----------------------------------------------------
-        # Evaluation Mode: decode detections
-        # ----------------------------------------------------
-        batch_dets, batch_centers = decode_centernet(
-            tl_heat=tl_heat,
-            br_heat=br_heat,
-            tl_tag=tl_tag,
-            br_tag=br_tag,
-            tl_regr=tl_regr,
-            br_regr=br_regr,
-            ct_heat=ct_heat,
-            ct_regr=ct_regr,
-            K=self.top_k,
-            kernel=self.nms_kernel,
-            ae_threshold=self.ae_threshold,
-            num_dets=self.max_detections,
-        )
+        # Inference mode (supports flip_test from CtdetDetector.process)
+        if self.flip_test:
+            bsz = x.size(0)
+            x_aug = torch.cat([x, torch.flip(x, dims=[3])], dim=0)
+            out_aug = self.net(x_aug)
+            hm = (torch.sigmoid(out_aug["hm"][:bsz]) + torch.flip(torch.sigmoid(out_aug["hm"][bsz:]), dims=[3])) / 2.0
+            wh = (out_aug["wh"][:bsz] + torch.flip(out_aug["wh"][bsz:], dims=[3])) / 2.0
+            reg = out_aug["reg"][:bsz]
+        else:
+            outputs = self.net(x)
+            hm = torch.sigmoid(outputs["hm"])
+            wh = outputs["wh"]
+            reg = outputs["reg"]
+
+        dets = ctdet_decode(hm, wh, reg=reg, cat_spec_wh=False, K=self.top_k)
 
         results: List[Dict[str, Tensor]] = []
-        for i in range(len(images)):
-            dets_i = batch_dets[i]
-            cents_i = batch_centers[i]
-            scale = scales[i]
-            px = pad_xs[i]
-            py = pad_ys[i]
-            ow, oh = orig_sizes[i]
+        for b_idx in range(len(images)):
+            scale = scales[b_idx]
+            px = pad_xs[b_idx]
+            py = pad_ys[b_idx]
+            ow, oh = orig_sizes[b_idx]
 
-            # Scale coordinates from 128x128 feature map to 512x512 canvas
-            dets_i[:, :4] = dets_i[:, :4] * float(self.stride)
-            cents_i[:, :2] = cents_i[:, :2] * float(self.stride)
+            det = dets[b_idx]  # [K, 6]: x1, y1, x2, y2, score, cls
+            scores = det[:, 4]
+            keep = scores >= self.score_thresh
+            det = det[keep]
 
-            # Apply scale-aware central region verification
-            verified_dets = apply_scale_aware_central_region(dets_i, cents_i)
-
-            if len(verified_dets) == 0:
-                results.append({
-                    "boxes": torch.zeros((0, 4), device=device, dtype=torch.float32),
-                    "scores": torch.zeros((0,), device=device, dtype=torch.float32),
-                    "labels": torch.zeros((0,), device=device, dtype=torch.int64),
-                })
+            if len(det) == 0:
+                results.append(
+                    {
+                        "boxes": torch.zeros((0, 4), device=device, dtype=torch.float32),
+                        "scores": torch.zeros((0,), device=device, dtype=torch.float32),
+                        "labels": torch.zeros((0,), device=device, dtype=torch.int64),
+                    }
+                )
                 continue
 
-            # Unpad and scale back to original unpadded resolution
-            x1 = (verified_dets[:, 0] - px) / scale
-            y1 = (verified_dets[:, 1] - py) / scale
-            x2 = (verified_dets[:, 2] - px) / scale
-            y2 = (verified_dets[:, 3] - py) / scale
+            boxes_in = det[:, :4] * self.stride
+            x1 = torch.clamp(boxes_in[:, 0] / scale - px, min=0.0, max=float(ow))
+            y1 = torch.clamp(boxes_in[:, 1] / scale - py, min=0.0, max=float(oh))
+            x2 = torch.clamp(boxes_in[:, 2] / scale - px, min=0.0, max=float(ow))
+            y2 = torch.clamp(boxes_in[:, 3] / scale - py, min=0.0, max=float(oh))
+            boxes_orig = torch.stack([x1, y1, x2, y2], dim=1)
 
-            x1 = x1.clamp(min=0.0, max=float(ow))
-            x2 = x2.clamp(min=0.0, max=float(ow))
-            y1 = y1.clamp(min=0.0, max=float(oh))
-            y2 = y2.clamp(min=0.0, max=float(oh))
+            valid = (boxes_orig[:, 2] > boxes_orig[:, 0]) & (boxes_orig[:, 3] > boxes_orig[:, 1])
+            boxes_orig = boxes_orig[valid]
+            scores_out = det[valid, 4]
+            labels_out = det[valid, 5].long() + 1  # 1-indexed matching VOC / FCOS convention
 
-            scores = verified_dets[:, 4]
-            # Map category (0..19) back to class ID (1..20)
-            labels = (verified_dets[:, 7] + 1.0).long()
-
-            boxes = torch.stack([x1, y1, x2, y2], dim=1)
-
-            # Filter valid dimensions and score threshold
-            valid = (boxes[:, 2] > boxes[:, 0]) & (boxes[:, 3] > boxes[:, 1])
-            if self.score_thresh > 0:
-                valid = valid & (scores >= self.score_thresh)
-
-            boxes = boxes[valid]
-            scores = scores[valid]
-            labels = labels[valid]
-
-            # Per-class NMS to remove redundant overlapping boxes
-            if len(boxes) > 0 and self.nms_iou_threshold > 0:
-                keep = []
-                for c in range(1, self.num_classes + 1):
-                    c_mask = labels == c
-                    if not c_mask.any():
-                        continue
-                    c_inds = torch.where(c_mask)[0]
-                    c_boxes = boxes[c_inds]
-                    c_scores = scores[c_inds]
-                    c_keep = nms(c_boxes, c_scores, self.nms_iou_threshold)
-                    keep.append(c_inds[c_keep])
-
-                if len(keep) > 0:
-                    keep = torch.cat(keep, dim=0)
-                    boxes = boxes[keep]
-                    scores = scores[keep]
-                    labels = labels[keep]
-
-                # Sort by score descending and keep up to max_detections
-                order = torch.argsort(-scores)[: self.max_detections]
-                boxes = boxes[order]
-                scores = scores[order]
-                labels = labels[order]
-
-            results.append({
-                "boxes": boxes,
-                "scores": scores,
-                "labels": labels,
-            })
+            results.append(
+                {
+                    "boxes": boxes_orig.float(),
+                    "scores": scores_out.float(),
+                    "labels": labels_out,
+                }
+            )
 
         return results
 
 
 def build_centernet_model(
     num_classes: int = 20,
-    class_agnostic: Optional[bool] = None,
-    ae_dim: Optional[int] = None,
-    pretrained: bool = False,
-    input_size: Tuple[int, int] = (512, 512),
+    num_layers: int = 50,
+    pretrained_backbone: bool = True,
+    use_dcn: bool = True,
+    input_size: Union[int, Tuple[int, int]] = 512,
+    head_conv: int = 64,
+    top_k: int = 100,
+    score_thresh: float = 0.0,
+    flip_test: bool = False,
     **kwargs,
 ) -> CenterNetDetector:
-    """
-    Factory function for CenterNet Keypoint Triplets model with Hourglass-52 backbone.
-    Hourglass-52 is trained from scratch as per Duan et al. (2019) and Newell et al. (2016).
-    """
-    try:
-        import run_config as cfg
-        if class_agnostic is None:
-            class_agnostic = getattr(cfg, "CENTERNET_CLASS_AGNOSTIC", False)
-        if ae_dim is None:
-            ae_dim = getattr(cfg, "CENTERNET_AE_DIM", 4 if class_agnostic else 1)
-    except Exception:
-        if class_agnostic is None:
-            class_agnostic = False
-        if ae_dim is None:
-            ae_dim = 4 if class_agnostic else 1
+    """Factory function for CenterNet (Objects as Points, Zhou et al. 2019)."""
+    if isinstance(input_size, int):
+        input_size_tuple = (input_size, input_size)
+    else:
+        input_size_tuple = tuple(input_size)
 
-    model = CenterNetDetector(
+    return CenterNetDetector(
         num_classes=num_classes,
-        class_agnostic=class_agnostic,
-        ae_dim=ae_dim,
-        input_size=input_size,
+        num_layers=num_layers,
+        pretrained_backbone=pretrained_backbone,
+        use_dcn=use_dcn,
+        input_size=input_size_tuple,
+        head_conv=head_conv,
+        top_k=top_k,
+        score_thresh=score_thresh,
+        flip_test=flip_test,
         **kwargs,
     )
-    return model

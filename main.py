@@ -1,6 +1,6 @@
 import torch
 from torch.optim import SGD, Adam
-from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.optim.lr_scheduler import MultiStepLR, ReduceLROnPlateau
 from torch.utils.data import DataLoader
 
 import run_config as cfg
@@ -66,25 +66,17 @@ def main():
             pretrained_backbone=getattr(cfg, "FCOS_PRETRAINED_BACKBONE", False),
         ).to(cfg.DEVICE)
         loss = None
-    elif model_name == "centernet_bfor":
-        from src.centernet_bfor import build_centernet_bfor_model
-
-        model = build_centernet_bfor_model(
-            alpha=getattr(cfg, "ALPHA", 0.1),
-            lambda_ctr=getattr(cfg, "LAMBDA_CTR", 1.0),
-            ae_dim=getattr(cfg, "CENTERNET_AE_DIM", 4),
-            top_k=getattr(cfg, "CENTERNET_TOP_K", 70),
-            ae_threshold=getattr(cfg, "CENTERNET_AE_THRESH", 0.5),
-        ).to(cfg.DEVICE)
-        loss = None
     elif model_name == "centernet":
         from src.centernet_model import build_centernet_model
 
         model = build_centernet_model(
-            class_agnostic=getattr(cfg, "CENTERNET_CLASS_AGNOSTIC", False),
-            ae_dim=getattr(cfg, "CENTERNET_AE_DIM", 4 if getattr(cfg, "CENTERNET_CLASS_AGNOSTIC", False) else 1),
-            top_k=getattr(cfg, "CENTERNET_TOP_K", 70),
-            ae_threshold=getattr(cfg, "CENTERNET_AE_THRESH", 0.5),
+            num_classes=getattr(cfg, "CENTERNET_NUM_CLASSES", 20),
+            num_layers=getattr(cfg, "CENTERNET_RESNET_LAYERS", 50),
+            pretrained_backbone=getattr(cfg, "CENTERNET_PRETRAINED_BACKBONE", True),
+            use_dcn=getattr(cfg, "CENTERNET_USE_DCN", True),
+            input_size=getattr(cfg, "CENTERNET_INPUT_SIZE", 512),
+            top_k=getattr(cfg, "CENTERNET_TOP_K", 100),
+            flip_test=getattr(cfg, "CENTERNET_FLIP_TEST", False),
         ).to(cfg.DEVICE)
         loss = None
     elif model_name == "bfor":
@@ -96,7 +88,7 @@ def main():
         )
     else:
         raise ValueError(
-            f"Unknown MODEL_NAME: '{model_name}'. Choose 'centernet', 'centernet_bfor', 'fcos', 'bfor_fcos', or 'bfor'."
+            f"Unknown MODEL_NAME: '{model_name}'. Choose 'fcos', 'bfor_fcos', 'centernet', or 'bfor'."
         )
 
     opt_type = getattr(
@@ -117,12 +109,22 @@ def main():
             weight_decay=weight_decay,
         )
 
-    lr_scheduler = ReduceLROnPlateau(
-        optimizer=optimizer,
-        factor=cfg.LR_FACTOR,
-        patience=cfg.LR_PATIENCE,
-        min_lr=cfg.MIN_LR_SCHEDULER,
-    )
+    sched_type = getattr(
+        cfg, "LR_SCHEDULER", "multistep" if model_name == "centernet" else "plateau"
+    ).lower()
+    if sched_type == "multistep":
+        lr_scheduler = MultiStepLR(
+            optimizer=optimizer,
+            milestones=getattr(cfg, "LR_MILESTONES", [45, 60]),
+            gamma=getattr(cfg, "LR_GAMMA", 0.1),
+        )
+    else:
+        lr_scheduler = ReduceLROnPlateau(
+            optimizer=optimizer,
+            factor=cfg.LR_FACTOR,
+            patience=cfg.LR_PATIENCE,
+            min_lr=cfg.MIN_LR_SCHEDULER,
+        )
     scaler = torch.amp.GradScaler(cfg.DEVICE)
 
     early_stopping = EarlyStopping(

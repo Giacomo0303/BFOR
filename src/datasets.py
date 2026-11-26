@@ -9,27 +9,69 @@ from torch.utils.data import ConcatDataset, Dataset, random_split
 from torchvision import tv_tensors
 from torchvision.datasets import CocoDetection, VOCDetection
 
-# Official CenterNet (CornerNet) data augmentation via torchvision.transforms.v2
-CENTERNET_TRAIN_TRANSFORM = v2.Compose([
-    v2.ScaleJitter(target_size=(512, 512), scale_range=(0.6, 1.4)),
-    v2.RandomCrop(size=(512, 512), pad_if_needed=True, fill=0),
-    v2.RandomHorizontalFlip(p=0.5),
-    v2.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4),
-    v2.ToImage(),
-    v2.ToDtype(torch.float32, scale=True),
-    v2.ClampBoundingBoxes(),
-    v2.SanitizeBoundingBoxes(min_size=1.0),
-])
+_CENTERNET_TRANSFORMS = {}
 
-CENTERNET_FALLBACK_TRANSFORM = v2.Compose([
-    v2.Resize((512, 512)),
-    v2.RandomHorizontalFlip(p=0.5),
-    v2.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4),
-    v2.ToImage(),
-    v2.ToDtype(torch.float32, scale=True),
-    v2.ClampBoundingBoxes(),
-    v2.SanitizeBoundingBoxes(min_size=1.0),
-])
+
+def _get_centernet_transforms(input_size: int = 512):
+    """Cached official CenterNet (Objects as Points) train augmentation pipelines."""
+    if input_size not in _CENTERNET_TRANSFORMS:
+        train_tf = v2.Compose([
+            v2.ScaleJitter(target_size=(input_size, input_size), scale_range=(0.6, 1.4)),
+            v2.RandomCrop(size=(input_size, input_size), pad_if_needed=True, fill=0),
+            v2.RandomHorizontalFlip(p=0.5),
+            v2.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4),
+            v2.ToImage(),
+            v2.ToDtype(torch.float32, scale=True),
+            v2.ClampBoundingBoxes(),
+            v2.SanitizeBoundingBoxes(min_size=1.0),
+        ])
+        fallback_tf = v2.Compose([
+            v2.Resize((input_size, input_size)),
+            v2.RandomHorizontalFlip(p=0.5),
+            v2.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4),
+            v2.ToImage(),
+            v2.ToDtype(torch.float32, scale=True),
+            v2.ClampBoundingBoxes(),
+            v2.SanitizeBoundingBoxes(min_size=1.0),
+        ])
+        _CENTERNET_TRANSFORMS[input_size] = (train_tf, fallback_tf)
+    return _CENTERNET_TRANSFORMS[input_size]
+
+
+def _apply_centernet_aug(img, raw_boxes, raw_labels):
+    """Applies CenterNet train augmentation if CENTERNET_DATA_AUG is enabled."""
+    try:
+        import run_config as cfg
+
+        apply_aug = getattr(cfg, "CENTERNET_DATA_AUG", True)
+        input_size = int(getattr(cfg, "CENTERNET_INPUT_SIZE", 512))
+    except Exception:
+        apply_aug = True
+        input_size = 512
+
+    if not apply_aug:
+        return None
+
+    w, h = img.size
+    if len(raw_boxes) > 0:
+        boxes_t = torch.tensor(raw_boxes, dtype=torch.float32)
+        labels_t = torch.tensor(raw_labels, dtype=torch.int64)
+    else:
+        boxes_t = torch.zeros((0, 4), dtype=torch.float32)
+        labels_t = torch.zeros((0,), dtype=torch.int64)
+
+    tv_boxes = tv_tensors.BoundingBoxes(boxes_t, format="XYXY", canvas_size=(h, w))
+    tgt = {"boxes": tv_boxes, "labels": labels_t}
+
+    train_tf, fallback_tf = _get_centernet_transforms(input_size)
+    out_img, out_tgt = train_tf(img, tgt)
+    if len(out_tgt["boxes"]) == 0 and len(raw_boxes) > 0:
+        out_img, out_tgt = fallback_tf(img, tgt)
+
+    return out_img.as_subclass(torch.Tensor), {
+        "boxes": out_tgt["boxes"].as_subclass(torch.Tensor),
+        "labels": out_tgt["labels"].as_subclass(torch.Tensor),
+    }
 
 
 VOC_CLASSES = (
@@ -164,7 +206,7 @@ class PascalVOC(Dataset):
             bboxes = [bboxes]
 
         # Mode FCOS / CenterNet: native resolution, xyxy pixel boxes and integer class IDs
-        if self.model_type in ["fcos", "bfor_fcos", "centernet", "centernet_bfor"]:
+        if self.model_type in ["fcos", "bfor_fcos", "centernet"]:
             fcos_boxes = []
             fcos_labels = []
             for box in bboxes:
@@ -181,36 +223,10 @@ class PascalVOC(Dataset):
                         fcos_labels.append(VOC_CLASS_TO_IDX[box["name"]])
                         labels.append(box["name"])
 
-            # Data augmentation strictly for CenterNet training split
-            if self.model_type in ["centernet", "centernet_bfor"] and self.split == "train":
-                try:
-                    import run_config as cfg
-                    apply_aug = getattr(cfg, "CENTERNET_DATA_AUG", True)
-                except Exception:
-                    apply_aug = True
-
-                if apply_aug:
-                    w, h = img.size
-                    if len(fcos_boxes) > 0:
-                        boxes_t = torch.tensor(fcos_boxes, dtype=torch.float32)
-                        labels_t = torch.tensor(fcos_labels, dtype=torch.int64)
-                    else:
-                        boxes_t = torch.zeros((0, 4), dtype=torch.float32)
-                        labels_t = torch.zeros((0,), dtype=torch.int64)
-
-                    tv_boxes = tv_tensors.BoundingBoxes(boxes_t, format="XYXY", canvas_size=(h, w))
-                    tgt = {"boxes": tv_boxes, "labels": labels_t}
-
-                    out_img, out_tgt = CENTERNET_TRAIN_TRANSFORM(img, tgt)
-                    if len(out_tgt["boxes"]) == 0 and len(fcos_boxes) > 0:
-                        out_img, out_tgt = CENTERNET_FALLBACK_TRANSFORM(img, tgt)
-
-                    tensor_img = out_img.as_subclass(torch.Tensor)
-                    target_dict = {
-                        "boxes": out_tgt["boxes"].as_subclass(torch.Tensor),
-                        "labels": out_tgt["labels"].as_subclass(torch.Tensor),
-                    }
-                    return tensor_img, target_dict
+            if self.model_type == "centernet" and self.split == "train":
+                aug_res = _apply_centernet_aug(img, fcos_boxes, fcos_labels)
+                if aug_res is not None:
+                    return aug_res
 
             tensor_img = F.to_tensor(img)
             if len(fcos_boxes) == 0:
@@ -414,7 +430,7 @@ class COCO2017(Dataset):
         ]
 
         # Mode FCOS / CenterNet: native resolution, xyxy pixel boxes and integer class IDs
-        if self.model_type in ["fcos", "bfor_fcos", "centernet", "centernet_bfor"]:
+        if self.model_type in ["fcos", "bfor_fcos", "centernet"]:
             fcos_boxes = []
             fcos_labels = []
             labels = []
@@ -431,36 +447,10 @@ class COCO2017(Dataset):
                         fcos_labels.append(VOC_CLASS_TO_IDX.get(cat_name, 1))
                         labels.append(cat_name)
 
-            # Data augmentation strictly for CenterNet training split
-            if self.model_type in ["centernet", "centernet_bfor"] and self.split == "train":
-                try:
-                    import run_config as cfg
-                    apply_aug = getattr(cfg, "CENTERNET_DATA_AUG", True)
-                except Exception:
-                    apply_aug = True
-
-                if apply_aug:
-                    w, h = img.size
-                    if len(fcos_boxes) > 0:
-                        boxes_t = torch.tensor(fcos_boxes, dtype=torch.float32)
-                        labels_t = torch.tensor(fcos_labels, dtype=torch.int64)
-                    else:
-                        boxes_t = torch.zeros((0, 4), dtype=torch.float32)
-                        labels_t = torch.zeros((0,), dtype=torch.int64)
-
-                    tv_boxes = tv_tensors.BoundingBoxes(boxes_t, format="XYXY", canvas_size=(h, w))
-                    tgt_dict = {"boxes": tv_boxes, "labels": labels_t}
-
-                    out_img, out_tgt = CENTERNET_TRAIN_TRANSFORM(img, tgt_dict)
-                    if len(out_tgt["boxes"]) == 0 and len(fcos_boxes) > 0:
-                        out_img, out_tgt = CENTERNET_FALLBACK_TRANSFORM(img, tgt_dict)
-
-                    tensor_img = out_img.as_subclass(torch.Tensor)
-                    target_dict = {
-                        "boxes": out_tgt["boxes"].as_subclass(torch.Tensor),
-                        "labels": out_tgt["labels"].as_subclass(torch.Tensor),
-                    }
-                    return tensor_img, target_dict
+            if self.model_type == "centernet" and self.split == "train":
+                aug_res = _apply_centernet_aug(img, fcos_boxes, fcos_labels)
+                if aug_res is not None:
+                    return aug_res
 
             tensor_img = F.to_tensor(img)
             if len(fcos_boxes) == 0:
