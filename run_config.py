@@ -11,7 +11,7 @@ DATA_PATH = (
     else "Data"
 )
 TRAIN_SIZE = 0.9
-BATCH_SIZE = 32 if MODEL_NAME == "centernet" else 4
+BATCH_SIZE = 16 if MODEL_NAME == "centernet" else 4
 NUM_WORKERS = 4
 SEED = 42
 
@@ -22,12 +22,16 @@ FCOS_NUM_CLASSES = 21  # 20 classes for VOC + 1 background
 # CenterNet (Objects as Points) Specific Settings
 CENTERNET_RESNET_LAYERS = 18  # 18, 34, 50, or 101
 CENTERNET_PRETRAINED_BACKBONE = True  # True: ImageNet-1K pretrain, False: Scratch
-CENTERNET_USE_DCN = True  # True: DCNv2 + bilinear deconv (paper default), False: std deconv
+CENTERNET_USE_DCN = (
+    True  # True: DCNv2 + bilinear deconv (paper default), False: std deconv
+)
 CENTERNET_NUM_CLASSES = 20  # 20 VOC foreground classes
 CENTERNET_INPUT_SIZE = 512  # 512 (paper VOC high-res / COCO) or 384
 CENTERNET_DATA_AUG = True  # Random scale/crop/flip/color jitter
 CENTERNET_TOP_K = 100  # Top-K peaks during standard inference
-CENTERNET_FLIP_TEST = True  # Horizontal flip test-time augmentation (paper Table 6 default)
+CENTERNET_FLIP_TEST = (
+    True  # Horizontal flip test-time augmentation (paper Table 6 default)
+)
 
 # B-FOR Specific Settings
 N_CHANNELS = 128
@@ -64,6 +68,8 @@ elif MODEL_NAME == "bfor_fcos":
 elif MODEL_NAME == "centernet":
     dcn_tag = "dcn" if CENTERNET_USE_DCN else "deconv"
     pre_tag = "pretrain" if CENTERNET_PRETRAINED_BACKBONE else "scratch"
-    SAVE_PATH = f"best_centernet_r{CENTERNET_RESNET_LAYERS}_{dcn_tag}_{pre_tag}_voc20.pt"
+    SAVE_PATH = (
+        f"best_centernet_r{CENTERNET_RESNET_LAYERS}_{dcn_tag}_{pre_tag}_voc20.pt"
+    )
 else:
     SAVE_PATH = "best_model_voc20.pt"

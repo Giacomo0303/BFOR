@@ -1,0 +1,100 @@
+=== Training Run started at 2026-11-26 12:30:44 ===
+
+
+=================================================================
+Starting training for 70 epochs on device: cuda
+Train batches: 931 | Val batches: 104
+=================================================================
+
+Epoch 001/070 | Train Loss: 9.8305 | Val Loss: 4.7040 | LR: 1.25e-04
+--> Val loss improved (inf --> 4.7040). Saving checkpoint to best_centernet_r18_dcn_pretrain_voc20.pt...
+Epoch 002/070 | Train Loss: 4.4173 | Val Loss: 4.4660 | LR: 1.25e-04
+--> Val loss improved (4.7040 --> 4.4660). Saving checkpoint to best_centernet_r18_dcn_pretrain_voc20.pt...
+Epoch 003/070 | Train Loss: 4.0806 | Val Loss: 4.0341 | LR: 1.25e-04
+--> Val loss improved (4.4660 --> 4.0341). Saving checkpoint to best_centernet_r18_dcn_pretrain_voc20.pt...
+Epoch 004/070 | Train Loss: 3.7450 | Val Loss: 3.7272 | LR: 1.25e-04
+--> Val loss improved (4.0341 --> 3.7272). Saving checkpoint to best_centernet_r18_dcn_pretrain_voc20.pt...
+Epoch 005/070 | Train Loss: 3.3311 | Val Loss: 3.4273 | LR: 1.25e-04
+--> Val loss improved (3.7272 --> 3.4273). Saving checkpoint to best_centernet_r18_dcn_pretrain_voc20.pt...
+Epoch 006/070 | Train Loss: 3.0835 | Val Loss: 3.2602 | LR: 1.25e-04
+--> Val loss improved (3.4273 --> 3.2602). Saving checkpoint to best_centernet_r18_dcn_pretrain_voc20.pt...
+Epoch 007/070 | Train Loss: 2.8076 | Val Loss: 3.0486 | LR: 1.25e-04
+--> Val loss improved (3.2602 --> 3.0486). Saving checkpoint to best_centernet_r18_dcn_pretrain_voc20.pt...
+Epoch 008/070 | Train Loss: 2.6497 | Val Loss: 2.9082 | LR: 1.25e-04
+--> Val loss improved (3.0486 --> 2.9082). Saving checkpoint to best_centernet_r18_dcn_pretrain_voc20.pt...
+Epoch 009/070 | Train Loss: 2.5425 | Val Loss: 2.8971 | LR: 1.25e-04
+--> Val loss improved (2.9082 --> 2.8971). Saving checkpoint to best_centernet_r18_dcn_pretrain_voc20.pt...
+Epoch 010/070 | Train Loss: 2.4457 | Val Loss: 2.8765 | LR: 1.25e-04
+--> Val loss improved (2.8971 --> 2.8765). Saving checkpoint to best_centernet_r18_dcn_pretrain_voc20.pt...
+Epoch 011/070 | Train Loss: 2.3650 | Val Loss: 2.8167 | LR: 1.25e-04
+--> Val loss improved (2.8765 --> 2.8167). Saving checkpoint to best_centernet_r18_dcn_pretrain_voc20.pt...
+Epoch 012/070 | Train Loss: 2.3033 | Val Loss: 2.7706 | LR: 1.25e-04
+--> Val loss improved (2.8167 --> 2.7706). Saving checkpoint to best_centernet_r18_dcn_pretrain_voc20.pt...
+Epoch 013/070 | Train Loss: 2.2314 | Val Loss: 2.7989 | LR: 1.25e-04
+EarlyStopping counter: 1 / 70
+Epoch 014/070 | Train Loss: 2.1758 | Val Loss: 2.7870 | LR: 1.25e-04
+EarlyStopping counter: 2 / 70
+Epoch 015/070 | Train Loss: 2.1245 | Val Loss: 2.7000 | LR: 1.25e-04
+--> Val loss improved (2.7706 --> 2.7000). Saving checkpoint to best_centernet_r18_dcn_pretrain_voc20.pt...
+Epoch 016/070 | Train Loss: 2.0824 | Val Loss: 2.8004 | LR: 1.25e-04
+EarlyStopping counter: 1 / 70
+Epoch 017/070 | Train Loss: 2.0211 | Val Loss: 2.7162 | LR: 1.25e-04
+EarlyStopping counter: 2 / 70
+Epoch 018/070 | Train Loss: 1.9839 | Val Loss: 2.6802 | LR: 1.25e-04
+--> Val loss improved (2.7000 --> 2.6802). Saving checkpoint to best_centernet_r18_dcn_pretrain_voc20.pt...
+Epoch 019/070 | Train Loss: 1.9414 | Val Loss: 2.7003 | LR: 1.25e-04
+EarlyStopping counter: 1 / 70
+Epoch 020/070 | Train Loss: 1.9005 | Val Loss: 2.6411 | LR: 1.25e-04
+--> Val loss improved (2.6802 --> 2.6411). Saving checkpoint to best_centernet_r18_dcn_pretrain_voc20.pt...
+Epoch 021/070 | Train Loss: 1.8800 | Val Loss: 2.6253 | LR: 1.25e-04
+--> Val loss improved (2.6411 --> 2.6253). Saving checkpoint to best_centernet_r18_dcn_pretrain_voc20.pt...
+Epoch 022/070 | Train Loss: 1.8389 | Val Loss: 2.6389 | LR: 1.25e-04
+EarlyStopping counter: 1 / 70
+Epoch 023/070 | Train Loss: 1.8083 | Val Loss: 2.6326 | LR: 1.25e-04
+EarlyStopping counter: 2 / 70
+Epoch 024/070 | Train Loss: 1.7804 | Val Loss: 2.6261 | LR: 1.25e-04
+EarlyStopping counter: 3 / 70
+Epoch 025/070 | Train Loss: 1.7453 | Val Loss: 2.6842 | LR: 1.25e-04
+EarlyStopping counter: 4 / 70
+Epoch 026/070 | Train Loss: 1.7160 | Val Loss: 2.6879 | LR: 1.25e-04
+EarlyStopping counter: 5 / 70
+Epoch 027/070 | Train Loss: 1.6951 | Val Loss: 2.7122 | LR: 1.25e-04
+EarlyStopping counter: 6 / 70
+Epoch 028/070 | Train Loss: 1.6776 | Val Loss: 2.7793 | LR: 1.25e-04
+EarlyStopping counter: 7 / 70
+Epoch 029/070 | Train Loss: 1.6474 | Val Loss: 2.7183 | LR: 1.25e-04
+EarlyStopping counter: 8 / 70
+Epoch 030/070 | Train Loss: 1.6235 | Val Loss: 2.6807 | LR: 1.25e-04
+EarlyStopping counter: 9 / 70
+Epoch 031/070 | Train Loss: 1.6080 | Val Loss: 2.7584 | LR: 1.25e-04
+EarlyStopping counter: 10 / 70
+Epoch 032/070 | Train Loss: 1.5944 | Val Loss: 2.6892 | LR: 1.25e-04
+EarlyStopping counter: 11 / 70
+Epoch 033/070 | Train Loss: 1.5441 | Val Loss: 2.8344 | LR: 1.25e-04
+EarlyStopping counter: 12 / 70
+Epoch 034/070 | Train Loss: 1.5426 | Val Loss: 2.6998 | LR: 1.25e-04
+EarlyStopping counter: 13 / 70
+Epoch 035/070 | Train Loss: 1.5296 | Val Loss: 2.6740 | LR: 1.25e-04
+EarlyStopping counter: 14 / 70
+Epoch 036/070 | Train Loss: 1.5023 | Val Loss: 2.8033 | LR: 1.25e-04
+EarlyStopping counter: 15 / 70
+Epoch 037/070 | Train Loss: 1.4843 | Val Loss: 2.7492 | LR: 1.25e-04
+EarlyStopping counter: 16 / 70
+Epoch 038/070 | Train Loss: 1.4679 | Val Loss: 2.7797 | LR: 1.25e-04
+EarlyStopping counter: 17 / 70
+Epoch 039/070 | Train Loss: 1.4601 | Val Loss: 2.8431 | LR: 1.25e-04
+EarlyStopping counter: 18 / 70
+Epoch 040/070 | Train Loss: 1.4449 | Val Loss: 2.7777 | LR: 1.25e-04
+EarlyStopping counter: 19 / 70
+Epoch 041/070 | Train Loss: 1.4191 | Val Loss: 2.8008 | LR: 1.25e-04
+EarlyStopping counter: 20 / 70
+Epoch 042/070 | Train Loss: 1.4119 | Val Loss: 2.8861 | LR: 1.25e-04
+EarlyStopping counter: 21 / 70
+Epoch 043/070 | Train Loss: 1.3923 | Val Loss: 2.8358 | LR: 1.25e-04
+EarlyStopping counter: 22 / 70
+Epoch 044/070 | Train Loss: 1.3786 | Val Loss: 2.8909 | LR: 1.25e-04
+EarlyStopping counter: 23 / 70
+Epoch 045/070 | Train Loss: 1.3768 | Val Loss: 2.9871 | LR: 1.25e-04
+EarlyStopping counter: 24 / 70
+Epoch 046/070 | Train Loss: 1.1999 | Val Loss: 2.8106 | LR: 1.25e-05
+EarlyStopping counter: 25 / 70
