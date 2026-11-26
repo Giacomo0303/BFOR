@@ -1,45 +1,109 @@
 import random
 from os.path import join
 
+import cv2
+import numpy as np
 import torch
 import torchvision.transforms.functional as F
-import torchvision.transforms.v2 as v2
 from torch import Generator
 from torch.utils.data import ConcatDataset, Dataset, random_split
-from torchvision import tv_tensors
 from torchvision.datasets import CocoDetection, VOCDetection
 
-_CENTERNET_TRANSFORMS = {}
+# Official CenterNet (Objects as Points, Zhou et al. 2019) VOC augmentation constants
+_CENTERNET_SCALES = (0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3)
+_CENTERNET_EIG_VAL = np.array([0.2141788, 0.01817699, 0.00341571], dtype=np.float32)
+_CENTERNET_EIG_VEC = np.array(
+    [
+        [-0.58752847, -0.69563484, 0.41340352],
+        [-0.5832747, 0.00994535, -0.81221408],
+        [-0.56089297, 0.71832671, 0.41158938],
+    ],
+    dtype=np.float32,
+)
 
 
-def _get_centernet_transforms(input_size: int = 512):
-    """Cached official CenterNet (Objects as Points) train augmentation pipelines."""
-    if input_size not in _CENTERNET_TRANSFORMS:
-        train_tf = v2.Compose([
-            v2.ScaleJitter(target_size=(input_size, input_size), scale_range=(0.6, 1.4)),
-            v2.RandomCrop(size=(input_size, input_size), pad_if_needed=True, fill=0),
-            v2.RandomHorizontalFlip(p=0.5),
-            v2.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4),
-            v2.ToImage(),
-            v2.ToDtype(torch.float32, scale=True),
-            v2.ClampBoundingBoxes(),
-            v2.SanitizeBoundingBoxes(min_size=1.0),
-        ])
-        fallback_tf = v2.Compose([
-            v2.Resize((input_size, input_size)),
-            v2.RandomHorizontalFlip(p=0.5),
-            v2.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4),
-            v2.ToImage(),
-            v2.ToDtype(torch.float32, scale=True),
-            v2.ClampBoundingBoxes(),
-            v2.SanitizeBoundingBoxes(min_size=1.0),
-        ])
-        _CENTERNET_TRANSFORMS[input_size] = (train_tf, fallback_tf)
-    return _CENTERNET_TRANSFORMS[input_size]
+def _get_border(border: int, size: int) -> int:
+    i = 1
+    while size - border // i <= border // i:
+        i *= 2
+    return border // i
+
+
+def _get_dir(src_point, rot_rad):
+    sn, cs = np.sin(rot_rad), np.cos(rot_rad)
+    return [
+        src_point[0] * cs - src_point[1] * sn,
+        src_point[0] * sn + src_point[1] * cs,
+    ]
+
+
+def _get_3rd_point(a, b):
+    direct = a - b
+    return b + np.array([-direct[1], direct[0]], dtype=np.float32)
+
+
+def _get_affine_transform(
+    center,
+    scale,
+    rot,
+    output_size,
+    shift=np.array([0, 0], dtype=np.float32),
+    inv=0,
+):
+    if not isinstance(scale, np.ndarray) and not isinstance(scale, list):
+        scale = np.array([scale, scale], dtype=np.float32)
+
+    src_w = scale[0]
+    dst_w, dst_h = output_size[0], output_size[1]
+
+    rot_rad = np.pi * rot / 180.0
+    src_dir = _get_dir([0, src_w * -0.5], rot_rad)
+    dst_dir = np.array([0, dst_w * -0.5], np.float32)
+
+    src = np.zeros((3, 2), dtype=np.float32)
+    dst = np.zeros((3, 2), dtype=np.float32)
+    src[0, :] = center + scale * shift
+    src[1, :] = center + src_dir + scale * shift
+    dst[0, :] = [dst_w * 0.5, dst_h * 0.5]
+    dst[1, :] = np.array([dst_w * 0.5, dst_h * 0.5], np.float32) + dst_dir
+
+    src[2:, :] = _get_3rd_point(src[0, :], src[1, :])
+    dst[2:, :] = _get_3rd_point(dst[0, :], dst[1, :])
+
+    if inv:
+        return cv2.getAffineTransform(np.float32(dst), np.float32(src))
+    return cv2.getAffineTransform(np.float32(src), np.float32(dst))
+
+
+def _affine_transform(pt, t):
+    new_pt = np.array([pt[0], pt[1], 1.0], dtype=np.float32).T
+    return np.dot(t, new_pt)[:2]
+
+
+def _color_aug(image: np.ndarray, eig_val: np.ndarray, eig_vec: np.ndarray) -> None:
+    """In-place official CenterNet RGB color jitter + PCA lighting noise."""
+    gs = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+    gs_mean = float(gs.mean())
+
+    ops = ["brightness", "contrast", "saturation"]
+    random.shuffle(ops)
+    for op in ops:
+        alpha = 1.0 + random.uniform(-0.4, 0.4)
+        if op == "brightness":
+            image *= alpha
+        elif op == "contrast":
+            image *= alpha
+            image += (1.0 - alpha) * gs_mean
+        else:
+            image *= alpha
+            image += (1.0 - alpha) * gs[:, :, None]
+
+    pca_alpha = np.array([random.gauss(0.0, 0.1) for _ in range(3)], dtype=np.float32)
+    image += np.dot(eig_vec, eig_val * pca_alpha)
 
 
 def _apply_centernet_aug(img, raw_boxes, raw_labels):
-    """Applies CenterNet train augmentation if CENTERNET_DATA_AUG is enabled."""
+    """Applies official CenterNet affine crop/flip + color augmentation if enabled."""
     try:
         import run_config as cfg
 
@@ -52,26 +116,55 @@ def _apply_centernet_aug(img, raw_boxes, raw_labels):
     if not apply_aug:
         return None
 
-    w, h = img.size
-    if len(raw_boxes) > 0:
-        boxes_t = torch.tensor(raw_boxes, dtype=torch.float32)
-        labels_t = torch.tensor(raw_labels, dtype=torch.int64)
+    img_np = np.asarray(img.convert("RGB"))
+    height, width = img_np.shape[0], img_np.shape[1]
+
+    c = np.array([width / 2.0, height / 2.0], dtype=np.float32)
+    s = float(max(height, width)) * random.choice(_CENTERNET_SCALES)
+    w_border = _get_border(128, width)
+    h_border = _get_border(128, height)
+    c[0] = float(random.randrange(w_border, width - w_border))
+    c[1] = float(random.randrange(h_border, height - h_border))
+
+    flipped = False
+    if random.random() < 0.5:
+        flipped = True
+        img_np = img_np[:, ::-1, :].copy()
+        c[0] = width - c[0] - 1.0
+
+    trans_input = _get_affine_transform(c, s, 0.0, [input_size, input_size])
+    inp = cv2.warpAffine(
+        img_np, trans_input, (input_size, input_size), flags=cv2.INTER_LINEAR
+    )
+    inp = inp.astype(np.float32) / 255.0
+    _color_aug(inp, _CENTERNET_EIG_VAL, _CENTERNET_EIG_VEC)
+    tensor_img = torch.from_numpy(np.ascontiguousarray(inp.transpose(2, 0, 1)))
+
+    out_boxes = []
+    out_labels = []
+    max_coord = float(input_size - 1)
+    for box, label in zip(raw_boxes, raw_labels):
+        x1, y1, x2, y2 = float(box[0]), float(box[1]), float(box[2]), float(box[3])
+        if flipped:
+            x1, x2 = width - x2 - 1.0, width - x1 - 1.0
+        p1 = _affine_transform((x1, y1), trans_input)
+        p2 = _affine_transform((x2, y2), trans_input)
+        bx1 = float(np.clip(p1[0], 0.0, max_coord))
+        by1 = float(np.clip(p1[1], 0.0, max_coord))
+        bx2 = float(np.clip(p2[0], 0.0, max_coord))
+        by2 = float(np.clip(p2[1], 0.0, max_coord))
+        if bx2 > bx1 and by2 > by1:
+            out_boxes.append([bx1, by1, bx2, by2])
+            out_labels.append(int(label))
+
+    if len(out_boxes) > 0:
+        boxes_t = torch.tensor(out_boxes, dtype=torch.float32)
+        labels_t = torch.tensor(out_labels, dtype=torch.int64)
     else:
         boxes_t = torch.zeros((0, 4), dtype=torch.float32)
         labels_t = torch.zeros((0,), dtype=torch.int64)
 
-    tv_boxes = tv_tensors.BoundingBoxes(boxes_t, format="XYXY", canvas_size=(h, w))
-    tgt = {"boxes": tv_boxes, "labels": labels_t}
-
-    train_tf, fallback_tf = _get_centernet_transforms(input_size)
-    out_img, out_tgt = train_tf(img, tgt)
-    if len(out_tgt["boxes"]) == 0 and len(raw_boxes) > 0:
-        out_img, out_tgt = fallback_tf(img, tgt)
-
-    return out_img.as_subclass(torch.Tensor), {
-        "boxes": out_tgt["boxes"].as_subclass(torch.Tensor),
-        "labels": out_tgt["labels"].as_subclass(torch.Tensor),
-    }
+    return tensor_img, {"boxes": boxes_t, "labels": labels_t}
 
 
 VOC_CLASSES = (
@@ -143,18 +236,21 @@ class PascalVOC(Dataset):
 
             full_set = ConcatDataset([voc2007_train, voc2012_train])
 
-            gen = Generator().manual_seed(self.seed)
-
-            train_set, val_set = random_split(
-                full_set,
-                lengths=[self.train_size, 1.0 - self.train_size],
-                generator=gen,
-            )
-
-            if self.split == "train":
-                self.dataset = train_set
+            if self.train_size >= 1.0:
+                self.dataset = full_set if self.split == "train" else []
             else:
-                self.dataset = val_set
+                gen = Generator().manual_seed(self.seed)
+
+                train_set, val_set = random_split(
+                    full_set,
+                    lengths=[self.train_size, 1.0 - self.train_size],
+                    generator=gen,
+                )
+
+                if self.split == "train":
+                    self.dataset = train_set
+                else:
+                    self.dataset = val_set
 
         elif self.split == "test":
             self.dataset = VOCDetection(
@@ -211,7 +307,7 @@ class PascalVOC(Dataset):
             fcos_labels = []
             for box in bboxes:
                 if box["name"] in self.target_classes:
-                    if self.split == "train" and box.get("difficult", "0") == "1":
+                    if self.split in ["train", "val"] and box.get("difficult", "0") == "1":
                         continue
                     b = box["bndbox"]
                     x1 = float(b["xmin"])
@@ -360,18 +456,21 @@ class COCO2017(Dataset):
 
             self.coco = coco_train.coco
 
-            gen = Generator().manual_seed(self.seed)
-
-            train_set, val_set = random_split(
-                coco_train,
-                lengths=[self.train_size, 1.0 - self.train_size],
-                generator=gen,
-            )
-
-            if self.split == "train":
-                self.dataset = train_set
+            if self.train_size >= 1.0:
+                self.dataset = coco_train if self.split == "train" else []
             else:
-                self.dataset = val_set
+                gen = Generator().manual_seed(self.seed)
+
+                train_set, val_set = random_split(
+                    coco_train,
+                    lengths=[self.train_size, 1.0 - self.train_size],
+                    generator=gen,
+                )
+
+                if self.split == "train":
+                    self.dataset = train_set
+                else:
+                    self.dataset = val_set
 
         elif self.split == "test":
             self.dataset = CocoDetection(

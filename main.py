@@ -22,31 +22,36 @@ def main():
         seed=cfg.SEED,
         model_type=cfg.MODEL_NAME,
     )
-    val_set = DatasetClass(
-        path=cfg.DATA_PATH,
-        split="val",
-        train_size=cfg.TRAIN_SIZE,
-        seed=cfg.SEED,
-        model_type=cfg.MODEL_NAME,
-    )
+    use_val = getattr(cfg, "TRAIN_SIZE", 0.9) < 1.0
 
     train_loader = DataLoader(
         dataset=train_set,
         batch_size=cfg.BATCH_SIZE,
         shuffle=True,
+        drop_last=True,
         collate_fn=DatasetClass.collate_fn,
         num_workers=cfg.NUM_WORKERS,
         pin_memory=True,
     )
 
-    val_loader = DataLoader(
-        dataset=val_set,
-        batch_size=cfg.BATCH_SIZE,
-        shuffle=False,
-        collate_fn=DatasetClass.collate_fn,
-        num_workers=max(1, cfg.NUM_WORKERS // 2),
-        pin_memory=True,
-    )
+    if use_val:
+        val_set = DatasetClass(
+            path=cfg.DATA_PATH,
+            split="val",
+            train_size=cfg.TRAIN_SIZE,
+            seed=cfg.SEED,
+            model_type=cfg.MODEL_NAME,
+        )
+        val_loader = DataLoader(
+            dataset=val_set,
+            batch_size=cfg.BATCH_SIZE,
+            shuffle=False,
+            collate_fn=DatasetClass.collate_fn,
+            num_workers=max(1, cfg.NUM_WORKERS // 2),
+            pin_memory=True,
+        )
+    else:
+        val_loader = None
 
     # 2. Model, Loss, Optimizer, Scheduler, Scaler
     model_name = getattr(cfg, "MODEL_NAME", "fcos").lower()
@@ -127,8 +132,10 @@ def main():
         )
     scaler = torch.amp.GradScaler(cfg.DEVICE)
 
-    early_stopping = EarlyStopping(
-        path=cfg.SAVE_PATH, patience=cfg.EARLY_STOPPING_PATIENCE
+    early_stopping = (
+        EarlyStopping(path=cfg.SAVE_PATH, patience=cfg.EARLY_STOPPING_PATIENCE)
+        if use_val
+        else None
     )
 
     # 3. Launch Training
@@ -144,6 +151,7 @@ def main():
         epochs=cfg.EPOCHS,
         device=cfg.DEVICE,
         max_grad_norm=getattr(cfg, "MAX_GRAD_NORM", 10.0),
+        save_path=cfg.SAVE_PATH,
     )
 
 

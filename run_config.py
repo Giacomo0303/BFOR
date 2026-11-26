@@ -10,8 +10,8 @@ DATA_PATH = (
     if os.path.exists("/mnt/external_ssd/Datasets")
     else "Data"
 )
-TRAIN_SIZE = 0.9
-BATCH_SIZE = 16 if MODEL_NAME == "centernet" else 4
+TRAIN_SIZE = 1.0 if MODEL_NAME == "centernet" else 0.9
+BATCH_SIZE = 32 if MODEL_NAME == "centernet" else 4
 NUM_WORKERS = 4
 SEED = 42
 

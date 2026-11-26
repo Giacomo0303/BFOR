@@ -158,6 +158,36 @@ def validate(model, dataloader, loss_fn, device, epoch=None):
     return running_loss / valid_batches
 
 
+def _save_checkpoint(
+    path,
+    epoch,
+    model,
+    optimizer=None,
+    scheduler=None,
+    scaler=None,
+    val_loss=None,
+    train_loss=None,
+):
+    dirname = os.path.dirname(path)
+    if dirname:
+        os.makedirs(dirname, exist_ok=True)
+    checkpoint = {
+        "epoch": epoch,
+        "model_state_dict": model.state_dict(),
+    }
+    if val_loss is not None:
+        checkpoint["val_loss"] = val_loss
+    if train_loss is not None:
+        checkpoint["train_loss"] = train_loss
+    if optimizer is not None:
+        checkpoint["optimizer_state_dict"] = optimizer.state_dict()
+    if scheduler is not None:
+        checkpoint["scheduler_state_dict"] = scheduler.state_dict()
+    if scaler is not None:
+        checkpoint["scaler_state_dict"] = scaler.state_dict()
+    torch.save(checkpoint, path)
+
+
 def run_training(
     model,
     train_loader,
@@ -172,17 +202,25 @@ def run_training(
     start_epoch=0,
     max_grad_norm=10.0,
     logger=None,
+    save_path=None,
 ):
     if logger is None:
-        logger = getattr(early_stopping, "logger", None)
+        logger = (
+            getattr(early_stopping, "logger", None)
+            if early_stopping is not None
+            else None
+        )
         if logger is None:
             logger = TrainingLogger("log.txt")
-    if getattr(early_stopping, "logger", None) is None:
+    if early_stopping is not None and getattr(early_stopping, "logger", None) is None:
         early_stopping.logger = logger
 
+    val_batches_str = (
+        str(len(val_loader)) if val_loader is not None else "None (Full Train)"
+    )
     logger(f"\n{'=' * 65}")
     logger(f"Starting training for {epochs} epochs on device: {device}")
-    logger(f"Train batches: {len(train_loader)} | Val batches: {len(val_loader)}")
+    logger(f"Train batches: {len(train_loader)} | Val batches: {val_batches_str}")
     logger(f"{'=' * 65}\n")
 
     for epoch in range(start_epoch, epochs):
@@ -201,46 +239,86 @@ def run_training(
             logger=logger,
         )
 
-        # 2. Validation with progress bar
-        val_loss = validate(
-            model=model,
-            dataloader=val_loader,
-            loss_fn=loss_fn,
-            device=device,
-            epoch=epoch + 1,
-        )
+        if val_loader is not None:
+            # 2. Validation with progress bar
+            val_loss = validate(
+                model=model,
+                dataloader=val_loader,
+                loss_fn=loss_fn,
+                device=device,
+                epoch=epoch + 1,
+            )
 
-        # 3. Learning rate scheduler step
-        if isinstance(lr_scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-            lr_scheduler.step(val_loss)
+            # 3. Learning rate scheduler step
+            if isinstance(lr_scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                lr_scheduler.step(val_loss)
+            else:
+                lr_scheduler.step()
+
+            # 4. Summary print
+            logger(
+                f"Epoch {epoch + 1:03d}/{epochs:03d} | "
+                f"Train Loss: {train_loss:.4f} | "
+                f"Val Loss: {val_loss:.4f} | "
+                f"LR: {current_lr:.2e}"
+            )
+
+            # 5. Check early stopping & save checkpoint
+            if early_stopping is not None:
+                early_stopping(
+                    validation_loss=val_loss,
+                    current_epoch=epoch,
+                    model=model,
+                    optimizer=optimizer,
+                    scheduler=lr_scheduler,
+                    scaler=scaler,
+                )
+
+                if early_stopping.early_stop:
+                    logger(f"\nTraining early-stopped at epoch {epoch + 1}!")
+                    break
+            elif save_path is not None:
+                _save_checkpoint(
+                    path=save_path,
+                    epoch=epoch,
+                    model=model,
+                    optimizer=optimizer,
+                    scheduler=lr_scheduler,
+                    scaler=scaler,
+                    val_loss=val_loss,
+                    train_loss=train_loss,
+                )
         else:
-            lr_scheduler.step()
+            # Full-train mode (no validation split / no early stopping)
+            if isinstance(lr_scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                lr_scheduler.step(train_loss)
+            else:
+                lr_scheduler.step()
 
-        # 4. Summary print
-        logger(
-            f"Epoch {epoch + 1:03d}/{epochs:03d} | "
-            f"Train Loss: {train_loss:.4f} | "
-            f"Val Loss: {val_loss:.4f} | "
-            f"LR: {current_lr:.2e}"
-        )
+            logger(
+                f"Epoch {epoch + 1:03d}/{epochs:03d} | "
+                f"Train Loss: {train_loss:.4f} | "
+                f"LR: {current_lr:.2e}"
+            )
 
-        # 5. Check early stopping & save checkpoint
-        early_stopping(
-            validation_loss=val_loss,
-            current_epoch=epoch,
-            model=model,
-            optimizer=optimizer,
-            scheduler=lr_scheduler,
-            scaler=scaler,
-        )
-
-        if early_stopping.early_stop:
-            logger(f"\nTraining early-stopped at epoch {epoch + 1}!")
-            break
+            if save_path is not None:
+                _save_checkpoint(
+                    path=save_path,
+                    epoch=epoch,
+                    model=model,
+                    optimizer=optimizer,
+                    scheduler=lr_scheduler,
+                    scaler=scaler,
+                    train_loss=train_loss,
+                )
+                logger(f"--> Saved checkpoint (epoch {epoch + 1}) to {save_path}")
 
     logger(f"\n{'=' * 65}")
     logger("Training finished!")
-    early_stopping.load_best_weights(model)
+    if early_stopping is not None:
+        early_stopping.load_best_weights(model)
+    elif save_path is not None:
+        logger(f"Final model weights saved at {save_path}")
     logger(f"{'=' * 65}\n")
     return model
 
