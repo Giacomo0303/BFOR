@@ -20,8 +20,8 @@ FCOS_PRETRAINED_BACKBONE = True  # ResNet-50 ImageNet-1K pretrained weights
 FCOS_NUM_CLASSES = 21  # 20 classes for VOC + 1 background
 
 # CenterNet (Objects as Points) Specific Settings
-CENTERNET_RESNET_LAYERS = 18  # 18, 34, 50, or 101
-CENTERNET_PRETRAINED_BACKBONE = True  # True: ImageNet-1K pretrain, False: Scratch
+CENTERNET_RESNET_LAYERS = 50  # 18, 34, 50, or 101
+CENTERNET_PRETRAINED_BACKBONE = False  # True: ImageNet-1K pretrain, False: Scratch
 CENTERNET_USE_DCN = (
     True  # True: DCNv2 + bilinear deconv (paper default), False: std deconv
 )

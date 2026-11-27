@@ -1,0 +1,154 @@
+=== Training Run started at 2026-11-27 08:51:05 ===
+
+
+=================================================================
+Starting training for 70 epochs on device: cuda
+Train batches: 517 | Val batches: None (Full Train)
+=================================================================
+
+Epoch 001/070 | Train Loss: 16.0979 | LR: 1.25e-04
+--> Saved checkpoint (epoch 1) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 002/070 | Train Loss: 4.2515 | LR: 1.25e-04
+--> Saved checkpoint (epoch 2) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 003/070 | Train Loss: 3.7992 | LR: 1.25e-04
+--> Saved checkpoint (epoch 3) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 004/070 | Train Loss: 3.4391 | LR: 1.25e-04
+--> Saved checkpoint (epoch 4) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 005/070 | Train Loss: 3.0202 | LR: 1.25e-04
+--> Saved checkpoint (epoch 5) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 006/070 | Train Loss: 2.6945 | LR: 1.25e-04
+--> Saved checkpoint (epoch 6) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 007/070 | Train Loss: 2.4437 | LR: 1.25e-04
+--> Saved checkpoint (epoch 7) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 008/070 | Train Loss: 2.2998 | LR: 1.25e-04
+--> Saved checkpoint (epoch 8) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 009/070 | Train Loss: 2.2011 | LR: 1.25e-04
+--> Saved checkpoint (epoch 9) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 010/070 | Train Loss: 2.1170 | LR: 1.25e-04
+--> Saved checkpoint (epoch 10) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 011/070 | Train Loss: 2.0558 | LR: 1.25e-04
+--> Saved checkpoint (epoch 11) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 012/070 | Train Loss: 1.9856 | LR: 1.25e-04
+--> Saved checkpoint (epoch 12) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 013/070 | Train Loss: 1.9428 | LR: 1.25e-04
+--> Saved checkpoint (epoch 13) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 014/070 | Train Loss: 1.8788 | LR: 1.25e-04
+--> Saved checkpoint (epoch 14) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 015/070 | Train Loss: 1.8427 | LR: 1.25e-04
+--> Saved checkpoint (epoch 15) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 016/070 | Train Loss: 1.8013 | LR: 1.25e-04
+--> Saved checkpoint (epoch 16) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 017/070 | Train Loss: 1.7528 | LR: 1.25e-04
+--> Saved checkpoint (epoch 17) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 018/070 | Train Loss: 1.7325 | LR: 1.25e-04
+--> Saved checkpoint (epoch 18) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 019/070 | Train Loss: 1.6939 | LR: 1.25e-04
+--> Saved checkpoint (epoch 19) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 020/070 | Train Loss: 1.6627 | LR: 1.25e-04
+--> Saved checkpoint (epoch 20) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 021/070 | Train Loss: 1.6345 | LR: 1.25e-04
+--> Saved checkpoint (epoch 21) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 022/070 | Train Loss: 1.5993 | LR: 1.25e-04
+--> Saved checkpoint (epoch 22) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 023/070 | Train Loss: 1.5718 | LR: 1.25e-04
+--> Saved checkpoint (epoch 23) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 024/070 | Train Loss: 1.5583 | LR: 1.25e-04
+--> Saved checkpoint (epoch 24) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 025/070 | Train Loss: 1.5391 | LR: 1.25e-04
+--> Saved checkpoint (epoch 25) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 026/070 | Train Loss: 1.5158 | LR: 1.25e-04
+--> Saved checkpoint (epoch 26) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 027/070 | Train Loss: 1.4894 | LR: 1.25e-04
+--> Saved checkpoint (epoch 27) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 028/070 | Train Loss: 1.4660 | LR: 1.25e-04
+--> Saved checkpoint (epoch 28) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 029/070 | Train Loss: 1.4532 | LR: 1.25e-04
+--> Saved checkpoint (epoch 29) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 030/070 | Train Loss: 1.4214 | LR: 1.25e-04
+--> Saved checkpoint (epoch 30) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 031/070 | Train Loss: 1.4215 | LR: 1.25e-04
+--> Saved checkpoint (epoch 31) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 032/070 | Train Loss: 1.3944 | LR: 1.25e-04
+--> Saved checkpoint (epoch 32) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 033/070 | Train Loss: 1.3951 | LR: 1.25e-04
+--> Saved checkpoint (epoch 33) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 034/070 | Train Loss: 1.3563 | LR: 1.25e-04
+--> Saved checkpoint (epoch 34) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 035/070 | Train Loss: 1.3643 | LR: 1.25e-04
+--> Saved checkpoint (epoch 35) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 036/070 | Train Loss: 1.3477 | LR: 1.25e-04
+--> Saved checkpoint (epoch 36) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 037/070 | Train Loss: 1.3193 | LR: 1.25e-04
+--> Saved checkpoint (epoch 37) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 038/070 | Train Loss: 1.3143 | LR: 1.25e-04
+--> Saved checkpoint (epoch 38) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 039/070 | Train Loss: 1.3009 | LR: 1.25e-04
+--> Saved checkpoint (epoch 39) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 040/070 | Train Loss: 1.2877 | LR: 1.25e-04
+--> Saved checkpoint (epoch 40) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 041/070 | Train Loss: 1.2827 | LR: 1.25e-04
+--> Saved checkpoint (epoch 41) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 042/070 | Train Loss: 1.2675 | LR: 1.25e-04
+--> Saved checkpoint (epoch 42) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 043/070 | Train Loss: 1.2443 | LR: 1.25e-04
+--> Saved checkpoint (epoch 43) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 044/070 | Train Loss: 1.2451 | LR: 1.25e-04
+--> Saved checkpoint (epoch 44) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 045/070 | Train Loss: 1.2397 | LR: 1.25e-04
+--> Saved checkpoint (epoch 45) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 046/070 | Train Loss: 1.0964 | LR: 1.25e-05
+--> Saved checkpoint (epoch 46) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 047/070 | Train Loss: 1.0600 | LR: 1.25e-05
+--> Saved checkpoint (epoch 47) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 048/070 | Train Loss: 1.0202 | LR: 1.25e-05
+--> Saved checkpoint (epoch 48) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 049/070 | Train Loss: 1.0135 | LR: 1.25e-05
+--> Saved checkpoint (epoch 49) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 050/070 | Train Loss: 0.9987 | LR: 1.25e-05
+--> Saved checkpoint (epoch 50) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 051/070 | Train Loss: 0.9826 | LR: 1.25e-05
+--> Saved checkpoint (epoch 51) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 052/070 | Train Loss: 0.9718 | LR: 1.25e-05
+--> Saved checkpoint (epoch 52) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 053/070 | Train Loss: 0.9658 | LR: 1.25e-05
+--> Saved checkpoint (epoch 53) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 054/070 | Train Loss: 0.9493 | LR: 1.25e-05
+--> Saved checkpoint (epoch 54) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 055/070 | Train Loss: 0.9441 | LR: 1.25e-05
+--> Saved checkpoint (epoch 55) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 056/070 | Train Loss: 0.9406 | LR: 1.25e-05
+--> Saved checkpoint (epoch 56) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 057/070 | Train Loss: 0.9363 | LR: 1.25e-05
+--> Saved checkpoint (epoch 57) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 058/070 | Train Loss: 0.9279 | LR: 1.25e-05
+--> Saved checkpoint (epoch 58) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 059/070 | Train Loss: 0.9175 | LR: 1.25e-05
+--> Saved checkpoint (epoch 59) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 060/070 | Train Loss: 0.9178 | LR: 1.25e-05
+--> Saved checkpoint (epoch 60) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 061/070 | Train Loss: 0.9109 | LR: 1.25e-06
+--> Saved checkpoint (epoch 61) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 062/070 | Train Loss: 0.9124 | LR: 1.25e-06
+--> Saved checkpoint (epoch 62) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 063/070 | Train Loss: 0.9066 | LR: 1.25e-06
+--> Saved checkpoint (epoch 63) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 064/070 | Train Loss: 0.9025 | LR: 1.25e-06
+--> Saved checkpoint (epoch 64) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 065/070 | Train Loss: 0.8946 | LR: 1.25e-06
+--> Saved checkpoint (epoch 65) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 066/070 | Train Loss: 0.8925 | LR: 1.25e-06
+--> Saved checkpoint (epoch 66) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 067/070 | Train Loss: 0.8974 | LR: 1.25e-06
+--> Saved checkpoint (epoch 67) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 068/070 | Train Loss: 0.8865 | LR: 1.25e-06
+--> Saved checkpoint (epoch 68) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 069/070 | Train Loss: 0.8988 | LR: 1.25e-06
+--> Saved checkpoint (epoch 69) to best_centernet_r50_dcn_pretrain_voc20.pt
+Epoch 070/070 | Train Loss: 0.8883 | LR: 1.25e-06
+--> Saved checkpoint (epoch 70) to best_centernet_r50_dcn_pretrain_voc20.pt
+
+=================================================================
+Training finished!
+Final model weights saved at best_centernet_r50_dcn_pretrain_voc20.pt
+=================================================================
+

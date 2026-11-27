@@ -1,0 +1,75 @@
+# Model & Dataset Selection
+MODEL_NAME = "centernet"  # "fcos", "bfor_fcos", "bfor", or "centernet"
+DATASET = "voc"  # "voc" or "coco"
+
+import os
+
+# Data
+DATA_PATH = (
+    "/mnt/external_ssd/Datasets"
+    if os.path.exists("/mnt/external_ssd/Datasets")
+    else "Data"
+)
+TRAIN_SIZE = 1.0 if MODEL_NAME == "centernet" else 0.9
+BATCH_SIZE = 32 if MODEL_NAME == "centernet" else 4
+NUM_WORKERS = 4
+SEED = 42
+
+# FCOS Specific Settings
+FCOS_PRETRAINED_BACKBONE = True  # ResNet-50 ImageNet-1K pretrained weights
+FCOS_NUM_CLASSES = 21  # 20 classes for VOC + 1 background
+
+# CenterNet (Objects as Points) Specific Settings
+CENTERNET_RESNET_LAYERS = 50  # 18, 34, 50, or 101
+CENTERNET_PRETRAINED_BACKBONE = True  # True: ImageNet-1K pretrain, False: Scratch
+CENTERNET_USE_DCN = (
+    True  # True: DCNv2 + bilinear deconv (paper default), False: std deconv
+)
+CENTERNET_NUM_CLASSES = 20  # 20 VOC foreground classes
+CENTERNET_INPUT_SIZE = 512  # 512 (paper VOC high-res / COCO) or 384
+CENTERNET_DATA_AUG = True  # Random scale/crop/flip/color jitter
+CENTERNET_TOP_K = 100  # Top-K peaks during standard inference
+CENTERNET_FLIP_TEST = (
+    True  # Horizontal flip test-time augmentation (paper Table 6 default)
+)
+
+# B-FOR Specific Settings
+N_CHANNELS = 128
+DROP_RATE = 0.2
+ALPHA = 0.1
+LAMBDA_CTR = 1.0
+K = 9
+ALL_CLASSES = True
+
+# Training
+EPOCHS = 70 if MODEL_NAME == "centernet" else 100
+OPTIMIZER = "sgd" if MODEL_NAME in ["fcos", "bfor_fcos"] else "adam"
+LR = (
+    1.25e-4
+    if MODEL_NAME == "centernet"
+    else (0.001 if MODEL_NAME in ["fcos", "bfor_fcos"] else 1e-4)
+)
+MOMENTUM = 0.9
+WEIGHT_DECAY = 1e-4 if MODEL_NAME in ["fcos", "bfor_fcos"] else 0.0
+LR_SCHEDULER = "multistep" if MODEL_NAME == "centernet" else "plateau"
+LR_MILESTONES = [45, 60]
+LR_GAMMA = 0.1
+LR_PATIENCE = 5
+LR_FACTOR = 0.3
+MIN_LR_SCHEDULER = 1e-9
+EARLY_STOPPING_PATIENCE = 70 if MODEL_NAME == "centernet" else 10
+MAX_GRAD_NORM = 10.0
+DEVICE = "cuda"
+
+if MODEL_NAME == "fcos":
+    SAVE_PATH = "best_fcos_voc20.pt"
+elif MODEL_NAME == "bfor_fcos":
+    SAVE_PATH = "best_bfor_fcos_voc20.pt"
+elif MODEL_NAME == "centernet":
+    dcn_tag = "dcn" if CENTERNET_USE_DCN else "deconv"
+    pre_tag = "pretrain" if CENTERNET_PRETRAINED_BACKBONE else "scratch"
+    SAVE_PATH = (
+        f"best_centernet_r{CENTERNET_RESNET_LAYERS}_{dcn_tag}_{pre_tag}_voc20.pt"
+    )
+else:
+    SAVE_PATH = "best_model_voc20.pt"
